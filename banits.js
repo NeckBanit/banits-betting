@@ -157,24 +157,37 @@ function probColor(p){return p>=30?'hi':p>=15?'md':'lo'}
 function probBarColor(p){return p>=30?'var(--high)':p>=15?'var(--med)':'var(--low)'}
 
 // ── Fixture sidebar whitelist ────────────────────────────────
-// Only these league IDs appear in the sidebar. Add/remove IDs here.
-// European country set — fixtures from non-European countries are hidden
-const EURO_COUNTRIES = new Set([
-  'England','Scotland','Wales','Ireland','Spain','Germany','France','Italy',
-  'Portugal','Netherlands','Belgium','Turkey','Greece','Russia','Ukraine',
-  'Austria','Switzerland','Denmark','Sweden','Norway','Poland',
-  'Czech-Republic','Czech Republic','Croatia','Serbia','Romania','Hungary','Slovakia',
-  'Slovenia','Bulgaria','Albania','Kosovo','Bosnia','North Macedonia',
-  'Montenegro','Cyprus','Luxembourg','Iceland','Finland','Israel',
-  'Lithuania','Latvia','Estonia','Georgia','Armenia','Azerbaijan','Belarus',
-  'Moldova','Malta','Gibraltar','Andorra','Liechtenstein','San Marino',
-  'Faroe Islands','Kazakhstan',
+// 2026-08-23: narrowed from "any adult competition in ~55 European
+// countries" (top AND second divisions, every domestic cup, every country
+// from England to Kazakhstan) down to an explicit whitelist of the specific
+// leagues actually wanted — the old, broad EURO_COUNTRIES-based filter is
+// why a single day's fixture fetch could contain ~700 games even though the
+// dashboard only ever needed a handful of them. This constant is now the
+// ONLY thing that decides what shows in the sidebar, the landing grid, and
+// what the results panel bothers batch-fetching events for — narrower here
+// means less pulled and processed everywhere downstream. Add/remove IDs
+// here to change what's tracked; league IDs are API-Football's, reused from
+// MAIN_LEAGUE_IDS below.
+const TRACKED_LEAGUES = new Set([
+  39,   // England — Premier League
+  40,   // England — Championship
+  41,   // England — League One
+  42,   // England — League Two
+  61,   // France — Ligue 1
+  140,  // Spain — La Liga
+  78,   // Germany — Bundesliga
+  94,   // Portugal — Primeira Liga
+  135,  // Italy — Serie A
 ]);
 
-// European club competition IDs (always show regardless of country field)
+// European club competition IDs — kept alongside TRACKED_LEAGUES (not
+// replaced by it) since these mix clubs from many different domestic
+// leagues into one pan-European fixture; user confirmed keeping them.
 const EURO_CUPS = new Set([2,3,848]); // UCL, UEL, UECL
 
-// Youth pattern — filter out under-age fixtures
+// Youth pattern — filter out under-age fixtures. Effectively a no-op now
+// that TRACKED_LEAGUES only lists senior top/second-tier competitions, but
+// harmless to keep as a defensive check against odd API data.
 const YOUTH_RE = /\bU-?1[3-9]\b|\bU-?2[01]\b|Under.?1[3-9]|Under.?2[01]|\bYouth\b|\bReserves?\b|\bB Team\b/i;
 
 // League ranking: English leagues get top priority, then European big leagues, then rest
@@ -186,10 +199,14 @@ const LEAGUE_RANK = {
   88:40, 94:41, 144:42, 179:43, 203:44,  // Eredivisie, Primeira Liga, Belgium, Scotland, Turkey
 };
 
-function isEuroAdult(f){
+// Renamed from isEuroAdult() — that name described the old, much broader
+// "any adult competition in Europe" behavior. This now means exactly what
+// it says: is this fixture in one of the 9 tracked domestic leagues (or one
+// of the 3 kept continental cups)?
+function isTrackedLeague(f){
   const lg = f.league?.name||'', h = f.teams?.home?.name||'', a = f.teams?.away?.name||'';
   if(EURO_CUPS.has(f.league?.id)) return true;
-  if(!EURO_COUNTRIES.has(f.league?.country)) return false;
+  if(!TRACKED_LEAGUES.has(f.league?.id)) return false;
   if(YOUTH_RE.test(lg)||YOUTH_RE.test(h)||YOUTH_RE.test(a)) return false;
   return true;
 }
@@ -207,9 +224,6 @@ function leagueSort(g){
   const name = g.name || '';
   return 100 + country.charCodeAt(0)*10 + name.charCodeAt(0);
 }
-
-// Keep for INTL_LEAGUES detection (used in Analysis tab routing)
-const LEAGUE_WHITELIST = EURO_CUPS; // backwards-compat alias (not used for filtering anymore)
 
 // International league IDs — used to route Analysis tab to club-stat fetching
 const INTL_LEAGUES = new Set([1,4,5,6,7,8,9,10,26,29,30,31,32,33,34]);
@@ -641,8 +655,8 @@ async function loadFixtures(){
     _fixturesCache = fixtures;
     renderLanding(); // update landing page with fresh data
 
-    // Filter to European adult leagues only
-    const euroAll = fixtures.filter(isEuroAdult);
+    // Filter to the tracked leagues only — see TRACKED_LEAGUES
+    const euroAll = fixtures.filter(isTrackedLeague);
     // Apply league filter if set
     const visible = _leagueFilter ? euroAll.filter(f=>f.league.id===_leagueFilter) : euroAll;
 
@@ -2897,10 +2911,13 @@ function renderLanding(){
     return;
   }
 
-  const live=fixtures.filter(f=>isLive(f.fixture.status.short));
-  const upcoming=fixtures.filter(f=>!isLive(f.fixture.status.short)&&!isFinal(f.fixture.status.short));
-  // Filter: European adult football only
-  const euroFixtures = fixtures.filter(isEuroAdult);
+  // Filter: tracked leagues only — see TRACKED_LEAGUES. Computed BEFORE the
+  // hero stats below, so "Live now"/"Upcoming"/"Total today" count the same
+  // tracked-league set the cards actually show, not all ~700 fixtures
+  // worldwide that a busy day's unfiltered /fixtures?date= response contains.
+  const euroFixtures = fixtures.filter(isTrackedLeague);
+  const live=euroFixtures.filter(f=>isLive(f.fixture.status.short));
+  const upcoming=euroFixtures.filter(f=>!isLive(f.fixture.status.short)&&!isFinal(f.fixture.status.short));
   // Apply league dropdown filter if set
   const visible = _leagueFilter
     ? euroFixtures.filter(f=>f.league.id===_leagueFilter)
@@ -2933,7 +2950,7 @@ function renderLanding(){
     <div class="lp-hero-stats">
       ${live.length?`<div class="lp-hstat"><div class="lp-hstat-n" style="color:var(--high)">${live.length}</div><div class="lp-hstat-l">Live now</div></div>`:''}
       <div class="lp-hstat"><div class="lp-hstat-n">${upcoming.length}</div><div class="lp-hstat-l">Upcoming</div></div>
-      <div class="lp-hstat"><div class="lp-hstat-n" style="color:var(--dim)">${fixtures.length}</div><div class="lp-hstat-l">Total today</div></div>
+      <div class="lp-hstat"><div class="lp-hstat-n" style="color:var(--dim)">${euroFixtures.length}</div><div class="lp-hstat-l">Total today</div></div>
     </div>
   </div>`;
 
@@ -2967,7 +2984,7 @@ function renderLanding(){
 
   const leagueDropdown=`<div class="lp-filter-row">
     <select class="lp-league-sel" onchange="setLeagueFilter(this.value?+this.value:null)">
-      <option value="">All European leagues (${euroFixtures.length} matches)</option>
+      <option value="">All tracked leagues (${euroFixtures.length} matches)</option>
       ${leagueOptions}
     </select>
   </div>`;
@@ -2976,7 +2993,9 @@ function renderLanding(){
   // ── Your teams (watchlist) ─────────────────────────────────────
   // Uses the full unfiltered fixture list (not just euroFixtures) so a
   // favourited team still shows up here even in a cup fixture or
-  // competition outside the sidebar's European whitelist.
+  // competition outside TRACKED_LEAGUES — deliberately not narrowed by the
+  // 2026-08-23 league-limiting fix below, since the whole point of a
+  // favourited team is to always surface its match regardless of competition.
   const favFixtures = _favTeams.size
     ? fixtures.filter(f=>_favTeams.has(f.teams.home.id)||_favTeams.has(f.teams.away.id))
     : [];
@@ -3092,8 +3111,8 @@ async function loadResultsPanel(){
   const container=document.getElementById('lp-results-list');
   if(!container)return;
   const fixtures=_fixturesCache;
-  // Filter: European adult football only
-  const euroFixtures = fixtures.filter(isEuroAdult);
+  // Filter: tracked leagues only — see TRACKED_LEAGUES
+  const euroFixtures = fixtures.filter(isTrackedLeague);
   // Apply league dropdown filter if set
   const visible = _leagueFilter
     ? euroFixtures.filter(f=>f.league.id===_leagueFilter)
