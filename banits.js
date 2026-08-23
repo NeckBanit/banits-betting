@@ -302,11 +302,25 @@ function favStarBtn(teamId, teamName){
 // actual cause was e.g. an invalid API key. _lastAfError records what
 // genuinely happened on the most recent failed call so callers can show an
 // accurate message; it's cleared on the next successful call.
+//
+// 2026-08-23 fix: _lastAfError is GLOBAL and shared by every in-flight call.
+// That was always slightly racy, but harmless while every afFetch() call ran
+// close to serially. Now that real concurrency is in play (SECTION 7b), an
+// unrelated background call finishing at the wrong moment can stomp this
+// global between another call's own await resolving and it reading the
+// error — e.g. a harmless head-to-head lookup failing in the background and
+// overwriting the message shown for why the ENTIRE match failed to load,
+// even though the fixture-detail call itself failed for a different reason
+// entirely. _afFetchCore() below returns the error alongside the data from
+// the exact same call — immune to that race — and afFetchErr() exposes it
+// for the couple of call sites that show a per-call failure message to the
+// user; afFetch() keeps writing the shared global too, for the many other
+// call sites that only care about the data and never show a message.
 let _lastAfError = null; // {kind, detail} | null
 
-async function afFetch(path){
+async function _afFetchCore(path){
   // Direct API call for fixture/WC/standings data.
-  if(path.startsWith('/players') && path.includes('search=')) return null;
+  if(path.startsWith('/players') && path.includes('search=')) return {data:null, error:null};
   // Player team queries use no-store so season changes always fetch fresh data
   const cacheMode = path.startsWith('/players?team=') ? 'no-store' : 'default';
   return queueAfCall(async()=>{
@@ -325,40 +339,51 @@ async function afFetch(path){
       _detectPlanFromHeaders(r.headers);
       if(!r.ok){
         if(r.status===429){
-          _lastAfError={kind:'rate-limit', detail:'HTTP 429'};
-          return '429';
+          return {data:'429', error:{kind:'rate-limit', detail:'HTTP 429'}};
         }
         if(r.status===401||r.status===403){
-          _lastAfError={kind:'auth', detail:`HTTP ${r.status}`};
-        }else{
-          _lastAfError={kind:'http', detail:`HTTP ${r.status}`};
+          return {data:null, error:{kind:'auth', detail:`HTTP ${r.status}`}};
         }
-        return null;
+        return {data:null, error:{kind:'http', detail:`HTTP ${r.status}`}};
       }
       const d=await r.json();
       if(d.errors&&Object.keys(d.errors).length){
         if(d.errors.rateLimit||d.errors['rate-limit']){
           // Rate limit in body — back off 1s then signal as 429 for retry
-          _lastAfError={kind:'rate-limit', detail:'rate limit reported in response body'};
           await new Promise(res=>setTimeout(res,1000));
-          return '429';
+          return {data:'429', error:{kind:'rate-limit', detail:'rate limit reported in response body'}};
         }
-        _lastAfError={kind:'api-error', detail:JSON.stringify(d.errors).slice(0,200)};
-        console.warn('[AF]',d.errors);return null;
+        console.warn('[AF]',d.errors);
+        return {data:null, error:{kind:'api-error', detail:JSON.stringify(d.errors).slice(0,200)}};
       }
-      _lastAfError=null; // success — clear any prior failure
-      return d;
+      return {data:d, error:null};
     }catch(e){
-      _lastAfError={kind:'network', detail:e.message};
-      console.warn('[AF]',e.message);return null;
+      console.warn('[AF]',e.message);
+      return {data:null, error:{kind:'network', detail:e.message}};
     }
   });
 }
 
-// Turns _lastAfError into a message that actually names the cause, instead
-// of always blaming a rate limit regardless of what happened.
-function afFailureMessage(prefix){
-  const e=_lastAfError;
+async function afFetch(path){
+  const {data,error}=await _afFetchCore(path);
+  _lastAfError=error; // preserved for callers that read the shared global directly
+  return data;
+}
+
+// Like afFetch(), but returns the error alongside the data from this exact
+// call instead of relying on the shared _lastAfError global — use this at
+// any call site that shows a per-call failure message to the user, so a
+// concurrent unrelated call can't stomp it first. See note above _lastAfError.
+async function afFetchErr(path){
+  return _afFetchCore(path);
+}
+
+// Turns an af error into a message that actually names the cause, instead
+// of always blaming a rate limit regardless of what happened. Pass the error
+// explicitly (from afFetchErr) where a per-call message is shown; falls back
+// to the shared global for older call sites that don't.
+function afFailureMessage(prefix, err){
+  const e = err!==undefined ? err : _lastAfError;
   if(!e) return `${prefix} — unknown error. Wait a moment and try again.`;
   switch(e.kind){
     case 'rate-limit':
@@ -588,11 +613,11 @@ async function loadFixtures(){
   // the whole thing means every failure path, known or not, always ends in
   // a visible message + Retry button instead of a silent hang.
   try {
-    let data = await afFetch(`/fixtures?date=${isoDate(d)}&timezone=Europe%2FLondon`);
+    let {data, error} = await afFetchErr(`/fixtures?date=${isoDate(d)}&timezone=Europe%2FLondon`);
     // Retry once on rate limit (worker caching means second call usually succeeds)
     if(data==='429'||!data){
       await new Promise(r=>setTimeout(r,1500));
-      data = await afFetch(`/fixtures?date=${isoDate(d)}&timezone=Europe%2FLondon`);
+      ({data, error} = await afFetchErr(`/fixtures?date=${isoDate(d)}&timezone=Europe%2FLondon`));
     }
     const fixtures=data?.response||[];
     _fixturesFetchDone = true;
@@ -604,7 +629,10 @@ async function loadFixtures(){
       if(data){
         list.innerHTML = '<div class="no-data">No fixtures found for this date.</div>';
       } else {
-        _landingErrMsg = afFailureMessage('Failed to load fixtures');
+        // Pass `error` explicitly (from this exact call) rather than letting
+        // afFailureMessage fall back to the shared _lastAfError global, which
+        // an unrelated concurrent call could have overwritten by now.
+        _landingErrMsg = afFailureMessage('Failed to load fixtures', error);
         list.innerHTML = `<div class="no-data">${_landingErrMsg}<br>${retryBtn('Retry', 'loadFixtures()')}</div>`;
       }
       renderLanding();return;
@@ -730,21 +758,22 @@ async function openMatch(fid){
   // ★ THE MAIN CALL — one request returns events + lineups + team stats + player stats
   // Use cache for non-live matches so clicking back+forward is instant.
   let detail = null;
+  let detailErr = null; // captured from this exact call — see _lastAfError note in SECTION 4
   const cached = _fixtureDetailCache.get(fid);
   const cachedLive = cached && isLive(cached?.response?.[0]?.fixture?.status?.short);
   if(cached && !cachedLive){
     detail = cached; // instant — no API call
   } else {
-    detail = await afFetch(`/fixtures?id=${fid}`);
+    ({data:detail, error:detailErr} = await afFetchErr(`/fixtures?id=${fid}`));
     if(!detail || detail==='429'){
       // Retry once with backoff
       await new Promise(r=>setTimeout(r,1500));
-      detail = await afFetch(`/fixtures?id=${fid}`);
+      ({data:detail, error:detailErr} = await afFetchErr(`/fixtures?id=${fid}`));
     }
     if(detail) _fixtureDetailCache.set(fid, detail);
   }
   const fx=detail?.response?.[0];
-  if(!fx){document.getElementById('mv-hdr').innerHTML=`<div class="ld-msg" style="color:var(--high)">${afFailureMessage('Failed to load fixture')}<br>${retryBtn('Retry', `openMatch(${fid})`)}</div>`;return;}
+  if(!fx){document.getElementById('mv-hdr').innerHTML=`<div class="ld-msg" style="color:var(--high)">${afFailureMessage('Failed to load fixture', detailErr)}<br>${retryBtn('Retry', `openMatch(${fid})`)}</div>`;return;}
 
   const ht=tinfo(fx.teams.home.name);
   const at=tinfo(fx.teams.away.name);
@@ -798,11 +827,17 @@ async function loadMatchContext(fx,ht,at){
   const isIntl=INTL_LEAGUES.has(lgId);
 
   // Load form + standings + H2H in parallel
+  // NOTE (2026-08-23 fix): head-to-head history lives at a DIFFERENT
+  // endpoint — /fixtures/headtohead — not /fixtures with an h2h param.
+  // /fixtures doesn't accept h2h at all, so this call has been failing on
+  // every single match view with a genuine upstream error ("The h2h field do
+  // not exist") — the h2h panel has silently never had data. Unrelated to
+  // rate limiting; just a wrong endpoint.
   const [hForm,aForm,standings,h2hData]=await Promise.all([
     afFetch(`/fixtures?team=${hId}&last=5&status=FT`),
     afFetch(`/fixtures?team=${aId}&last=5&status=FT`),
     isIntl?null:afFetch(`/standings?league=${lgId}&season=${lgSeason}`),
-    afFetch(`/fixtures?h2h=${hId}-${aId}&last=5&status=FT`),
+    afFetch(`/fixtures/headtohead?h2h=${hId}-${aId}&last=5&status=FT`),
   ]);
 
   // ── Form strips ──────────────────────────────────────────────
