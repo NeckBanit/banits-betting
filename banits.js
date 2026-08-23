@@ -314,6 +314,15 @@ async function afFetch(path){
       _callCount++;
       document.getElementById('sb-calls').textContent=`API calls: ${_callCount}`;
       const r=await fetch(_apiBase()+path,{headers:_apiHdrs(), cache:cacheMode});
+      // Plan auto-detection was previously wired only into afFetchRaw() — the
+      // secondary fetch path used by a handful of player-stat calls — so it
+      // essentially never fired, since afFetch() (this function) carries
+      // nearly all real API traffic (fixtures, predictions, odds, standings,
+      // h2h, form, referee, calibration). That meant the rate limiter stayed
+      // pinned at its conservative default pacing for the whole session
+      // regardless of the account's actual plan. Call it here too so real
+      // traffic actually benefits from the higher limit once headers reveal it.
+      _detectPlanFromHeaders(r.headers);
       if(!r.ok){
         if(r.status===429){
           _lastAfError={kind:'rate-limit', detail:'HTTP 429'};
@@ -407,6 +416,23 @@ const REF_FACTOR_MIN  = 0.75;
 const REF_FACTOR_MAX  = 1.35;
 const _refCache = new Map(); // `${ref}_${leagueId}_${season}` → result
 
+// Shared by getRefereeFactor() and getLeagueCardBaseline() — both pull card
+// counts for a batch of historical (always-finished) fixtures. Checks/fills
+// the same _fixtureDetailCache openMatch() already uses, so a fixture
+// sampled by one feature (or previously opened directly by the user) isn't
+// re-fetched by the other — real savings once a session's been running a
+// while, on top of the rate-limiter fix below which is the main one.
+async function getHistoricalCardCount(fx){
+  const fid = fx.fixture.id;
+  let d = _fixtureDetailCache.get(fid);
+  if(!d){
+    d = await afFetch(`/fixtures?id=${fid}`);
+    if(d) _fixtureDetailCache.set(fid, d);
+  }
+  const events = d?.response?.[0]?.events || [];
+  return events.filter(e=>e.type==='Card').length;
+}
+
 async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId){
   const none = {factor:1, sample:0, avgCards:null, leagueAvgCards:null, refereeName:refereeName||null};
   if(!refereeName || !leagueId || !season) return none;
@@ -445,15 +471,9 @@ async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId)
       .filter(f=>!refFixtures.some(rf=>rf.fixture.id===f.fixture.id))
       .slice(0, REF_SAMPLE_CAP);
 
-    const cardsFor = async (fx) => {
-      const d = await afFetch(`/fixtures?id=${fx.fixture.id}`);
-      const events = d?.response?.[0]?.events || [];
-      return events.filter(e=>e.type==='Card').length;
-    };
-
     const [refCounts, baseCounts] = await Promise.all([
-      Promise.all(refFixtures.map(cardsFor)),
-      Promise.all(baselinePool.map(cardsFor)),
+      Promise.all(refFixtures.map(getHistoricalCardCount)),
+      Promise.all(baselinePool.map(getHistoricalCardCount)),
     ]);
 
     const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
@@ -501,11 +521,7 @@ async function getLeagueCardBaseline(leagueId, season){
     const all = data?.response || [];
     if(!all.length){ _leagueCardCache.set(key,null); return null; }
     const sample = all.slice(0, CALIB_SAMPLE_CAP);
-    const counts = await Promise.all(sample.map(async fx=>{
-      const d = await afFetch(`/fixtures?id=${fx.fixture.id}`);
-      const events = d?.response?.[0]?.events || [];
-      return events.filter(e=>e.type==='Card').length;
-    }));
+    const counts = await Promise.all(sample.map(getHistoricalCardCount));
     if(!counts.length){ _leagueCardCache.set(key,null); return null; }
     const avgCards = counts.reduce((a,b)=>a+b,0)/counts.length;
     const result = {avgCards, sample:counts.length};
@@ -1266,21 +1282,36 @@ fetchPlayersThrottled._lsLoaded = false;
 // before we can read the status — every such failure looked identical to a
 // genuine network error and was never retried. We now (a) serialize ALL AF
 // ═══════════════════════════════════════════════════════════════
-// SECTION 7b — API RATE LIMITER (concurrency semaphore)
+// SECTION 7b — API RATE LIMITER (concurrency semaphore + real pacing)
 // ═══════════════════════════════════════════════════════════════
-// Old approach: serial queue with 1100ms gap = ~54 req/min max.
-// New approach: true concurrency semaphore — N calls run in parallel,
-// throttled by plan limits read from response headers.
+// 2026-08-23 fix: the previous version of this limiter capped CONCURRENCY
+// (max simultaneous in-flight requests) but had no minimum spacing between
+// DISPATCHES. That works fine for slow/uncached requests, but a cache hit
+// at the Cloudflare edge (or the browser's own HTTP cache) can resolve in
+// well under 100ms — so N concurrent slots cycling that fast can burst to
+// many times N requests/second, blowing straight through a per-minute
+// quota even though "only N were ever in flight at once". This is the
+// most likely real cause of the 429s being reported: concurrency ≠ rate.
+//
+// Fix: dispatches are now paced with a minimum gap (_afMinGapMs) derived
+// from the plan's real per-minute limit (detected from response headers,
+// same as before), in addition to the concurrency cap — so throughput is
+// bounded by actual elapsed time, not by how fast responses happen to come
+// back. Concurrency still allows some overlap for slow/uncached requests;
+// pacing is what actually keeps requests/minute under the real limit.
 //
 // Plan limits (per API-Football docs):
-//   Free:   10 req/min  → 1 concurrent
-//   Pro:   300 req/min  → 5 concurrent (5/sec)
-//   Ultra: 450 req/min  → 7 concurrent
-//   Mega:  900 req/min  → 15 concurrent
+//   Free:   10 req/min
+//   Pro:   300 req/min
+//   Ultra: 450 req/min
+//   Mega:  900 req/min
 //
-// We start at 3 concurrent (safe for any plan) and auto-scale upward
-// when we see what limit the API reports back in headers.
-let _afConcurrent = 3;          // 3 concurrent slots — scales up when plan headers are detected
+// Conservative defaults (before any plan is detected from headers) assume
+// the smallest realistic plan; both concurrency and gap widen once real
+// headers are seen.
+let _afConcurrent = 2;          // max simultaneous in-flight calls
+let _afMinGapMs   = 300;        // minimum ms between DISPATCHES — this is what actually caps req/min, not concurrency
+let _afLastDispatch = 0;
 let _afActive = 0;              // currently in-flight calls
 const _afPending = [];          // waiting calls
 
@@ -1289,12 +1320,15 @@ function _detectPlanFromHeaders(headers){
   try{
     const lim = parseInt(headers.get('X-RateLimit-Limit')||headers.get('x-ratelimit-limit')||'0');
     if(!lim) return;
-    if(lim >= 900) _afConcurrent = 12;
-    else if(lim >= 450) _afConcurrent = 7;
-    else if(lim >= 300) _afConcurrent = 5;
+    // +20% safety margin on the gap — better to run a little under the real
+    // limit than to keep tripping 429s right at the edge of it.
+    _afMinGapMs = Math.max(50, Math.ceil(60000 / lim * 1.2));
+    if(lim >= 900) _afConcurrent = 6;
+    else if(lim >= 450) _afConcurrent = 5;
+    else if(lim >= 300) _afConcurrent = 4;
     else if(lim >= 60)  _afConcurrent = 2;
     else                _afConcurrent = 1; // free plan: 10/min
-    console.log(`[AF] Plan detected: ${lim} req/min → ${_afConcurrent} concurrent slots`);
+    console.log(`[AF] Plan detected: ${lim} req/min → ${_afConcurrent} concurrent slots, ${_afMinGapMs}ms min gap between dispatches`);
   }catch(e){}
 }
 
@@ -1305,12 +1339,20 @@ function queueAfCall(fn){
   });
 }
 function _afDrain(){
-  while(_afActive < _afConcurrent && _afPending.length){
-    const {fn,resolve,reject} = _afPending.shift();
-    _afActive++;
-    fn().then(r=>{_afActive--;resolve(r);_afDrain();})
-        .catch(e=>{_afActive--;reject(e);_afDrain();});
+  if(_afActive >= _afConcurrent || !_afPending.length) return;
+  const wait = _afLastDispatch + _afMinGapMs - Date.now();
+  if(wait > 0){
+    setTimeout(_afDrain, wait);
+    return;
   }
+  const {fn,resolve,reject} = _afPending.shift();
+  _afLastDispatch = Date.now();
+  _afActive++;
+  fn().then(r=>{_afActive--;resolve(r);_afDrain();})
+      .catch(e=>{_afActive--;reject(e);_afDrain();});
+  // Try to schedule the next dispatch too — it'll self-pace via the gap
+  // check above rather than firing immediately alongside this one.
+  _afDrain();
 }
 
 // Cache /players?id=X&season=Y results for the session
