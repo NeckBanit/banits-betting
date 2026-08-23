@@ -1269,44 +1269,83 @@ async function fetchPlayersThrottled(players, seasons, onProgress=null){
     }catch(e){}
   }
 
+  // afFetchRetry(...) returning null is unambiguous: afFetchRaw() only ever
+  // returns null on a genuine failure (non-2xx status, network/CORS
+  // exception, or an API-Football `errors` payload) — a well-formed
+  // response with genuinely no stats for that player/season still comes
+  // back as a real object (e.g. `{response:[]}`), which extractDomesticStats
+  // correctly turns into `stats:null` separately. So `failed` here means
+  // "the request itself didn't go through", not "no stats found" — that
+  // distinction is what makes the second pass below possible.
   async function cachedFetch(id, season){
     const key = `${id}_${season}`;
     // In-memory cache (covers current session + pre-loaded from localStorage above)
-    if(_playerStatsCache.has(key)) return _playerStatsCache.get(key);
+    if(_playerStatsCache.has(key)) return {stats:_playerStatsCache.get(key), failed:false};
     // Fetch from API
     const r = await afFetchRetry(`/players?id=${id}&season=${season}`, 1); // 1 retry on 429
-    if(r==='BREAKER') return 'BREAKER';
+    if(r==='BREAKER') return {stats:null, failed:true};
+    if(r===null) return {stats:null, failed:true}; // real fetch/API failure — worth retrying later
     const stats = extractDomesticStats(r?.response?.[0]);
     if(stats){
       // Only cache and persist successful results — nulls are retried next load
       _playerStatsCache.set(key, stats);
       try{ localStorage.setItem(LS_PREFIX+key, JSON.stringify({t:Date.now(),d:stats})); }catch(e){}
     }
-    return stats; // null if nothing found — caller will show "No data"
+    return {stats, failed:false}; // well-formed response — null here means genuinely no data, not retryable
   }
 
   async function fetchOne(lp){
+    // cachedFetch() always resolves to {stats, failed} — a tripped breaker
+    // folds in as failed:true, same as any other real fetch failure; the
+    // outer second-pass loop already skips entirely while _breakerTripped,
+    // so no special-casing needed here.
+    let anyFailed = false;
     const quick = await cachedFetch(lp.id, primarySeason);
-    if(quick==='BREAKER') return 'BREAKER';
-    if(quick) return quick;
+    if(quick.stats) return quick.stats;
+    if(quick.failed) anyFailed = true;
     for(const s of fallbackSeasons){
       const fb = await cachedFetch(lp.id, s);
-      if(fb==='BREAKER') return 'BREAKER';
-      if(fb) return fb;
+      if(fb.stats) return fb.stats;
+      if(fb.failed) anyFailed = true;
     }
-    return placeholderPlayer(lp);
+    // retryable:true only when EVERY season tried failed due to a real fetch
+    // error, not a confirmed-empty response — see cachedFetch note above.
+    return placeholderPlayer(lp, anyFailed);
   }
 
   // Fire all fetches simultaneously — the semaphore throttles to plan limits.
+  // fetchOne() always resolves to either real stats or a placeholder object.
   let done = 0;
   const promises = players.map(async(lp,i)=>{
-    const r = await fetchOne(lp);
-    results[i] = (r==='BREAKER') ? placeholderPlayer(lp) : r;
+    results[i] = await fetchOne(lp);
     if(results[i] && lp.number) results[i] = {...results[i], number: lp.number};
     done++;
     if(onProgress) onProgress(done, players.length);
   });
   await Promise.all(promises);
+
+  // Second pass — "right first time": a cold match view fires a genuinely
+  // large burst (fixture context + referee/calibration history + every
+  // starter/bench player's own stats call, all sharing one paced queue), and
+  // a player whose call lands late in that burst can exhaust its single
+  // 429-retry before the queue has thinned out — permanently showing "No
+  // data found" for that page view, even though the player's stats are
+  // really there. Previously the only way to recover was a full manual
+  // reload, which worked because most other calls were now cache-warm and
+  // competing for far fewer queue slots. Reproducing that same recovery
+  // automatically: retry only the players tagged retryable (a real fetch
+  // failure, never a confirmed-empty response) once the main batch has
+  // drained and the queue is short again.
+  const retryIdx = results.map((r,i)=>r?.retryable?i:-1).filter(i=>i>=0);
+  if(retryIdx.length && !_breakerTripped){
+    await new Promise(res=>setTimeout(res,500)); // let the queue fully drain first
+    await Promise.all(retryIdx.map(async i=>{
+      const r = await fetchOne(players[i]);
+      results[i] = r;
+      if(results[i] && players[i].number) results[i] = {...results[i], number: players[i].number};
+    }));
+    if(onProgress) onProgress(players.length, players.length);
+  }
 
   return results;
 }
@@ -1439,8 +1478,13 @@ async function afFetchRaw(path){
   });
 }
 
-// Placeholder card for a player whose club stats couldn't be found in any season tried.
-function placeholderPlayer(lp){
+// Placeholder card for a player whose club stats couldn't be found in any
+// season tried. `retryable` marks this as a transient fetch failure (429/
+// network/http-error on every season attempted) rather than a confirmed
+// empty response — fetchPlayersThrottled() uses it to automatically retry
+// once the initial burst has drained, instead of the user needing to
+// manually reload the page to recover players caught in a rate-limit spike.
+function placeholderPlayer(lp, retryable){
   const rawPos = lp.pos || lp.position; // lineup players use 'pos', squad players use 'position'
   return{
     id:lp.id, name:lp.name||'?', pos:normalizePos(rawPos), posL:posLabel(normalizePos(rawPos)),
@@ -1448,7 +1492,7 @@ function placeholderPlayer(lp){
     fp90:0, tp90:0, yc:0, apps:0, mins:0, totalFouls:0, totalTackles:0,
     fd90:0, drb90:0, duelsW90:0, duelsT90:0,
     prob:null, srcLeague:null, srcTeam:null, srcSeason:null,
-    lowConf:true, foulsMissing:false, noData:true, isClub:true,
+    lowConf:true, foulsMissing:false, noData:true, isClub:true, retryable:!!retryable,
   };
 }
 
