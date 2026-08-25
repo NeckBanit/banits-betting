@@ -6,12 +6,17 @@
      Third 25/26: Red (#CC1500) + White accents
      Badge:       Pure Blue (#0000FF) + White
   ─────────────────────────────────────────────────────────── */
-  /* Backgrounds — deep navy inspired by the away kit's black+cobalt */
-  --bg:#02091C;--card:#060F28;--card2:#0A1533;--card3:#0E1B3E;
-  /* Borders — cobalt tinted */
-  --border:rgba(0,71,181,.18);--border2:rgba(0,71,181,.34);
+  /* 2026-08-25 design refresh: deepened from a near-black navy (#02091C) to
+     a modern-sports-SaaS slate range (still on the same navy hue so BCFC
+     identity carries through — this isn't a palette swap, just more depth
+     and separation between layers). Every existing rule already consumes
+     these token NAMES (500+ usages), so only the values below changed —
+     no selector had to be touched to get the new look everywhere at once. */
+  --bg:#080D1C;--card:#0F1729;--card2:#141D34;--card3:#1A2440;
+  /* Borders — cobalt tinted, slightly more visible against the lighter surfaces above */
+  --border:rgba(148,163,184,.12);--border2:rgba(148,163,184,.22);
   /* Text — jersey white tones */
-  --text:#EEF2FF;--muted:#7A96C2;--dim:#6988BF; /* lightened from #344D7A — the old value averaged ~2.2:1 contrast against these backgrounds (WCAG AA needs 4.5:1) and was used as text color 118× across the app; this keeps the same hue but lifts lightness to pass AA everywhere it's used as text */
+  --text:#EEF2FF;--muted:#8AA0C9;--dim:#6988BF; /* lightened from #344D7A — the old value averaged ~2.2:1 contrast against these backgrounds (WCAG AA needs 4.5:1) and was used as text color 118× across the app; this keeps the same hue but lifts lightness to pass AA everywhere it's used as text */
   /* BCFC brand palette */
   --gold:#F0B323;          /* Jersey Gold — home kit trim, Nike logo */
   --cobalt:#0047B5;        /* Hyper Cobalt — home kit primary. Reserved for borders/backgrounds/icons — too dark to use as text (~2.25:1). */
@@ -29,12 +34,41 @@
   --pos-mid:#1A6FE0;   /* MID → Light cobalt (away sash) */
   --pos-def:#0047B5;   /* DEF → Hyper Cobalt (home kit) */
   --pos-gk:#F0B323;    /* GK  → Jersey Gold (home kit trim) */
+
+  /* ── Design tokens (2026-08-25 refresh) ──────────────────────
+     Spacing/radius scale + elevation tiers + glass surfaces. New,
+     additive tokens only — nothing above was renamed, so this is a
+     layer on top of the existing system, not a replacement of it. */
+  --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:28px;--sp-8:40px;
+  --r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:20px;
+  --shadow-1:0 1px 2px rgba(0,0,0,.35),0 4px 14px -8px rgba(0,0,0,.5);
+  --shadow-2:0 2px 4px rgba(0,0,0,.4),0 14px 34px -14px rgba(0,0,0,.65);
+  --shadow-gold:0 0 0 1px rgba(240,179,35,.22),0 8px 26px -10px rgba(240,179,35,.32);
+  /* Glass surfaces — semi-transparent versions of --card for backdrop-filter
+     panels (sticky headers, tab bar, mobile bottom nav). Needs something
+     with texture behind it to read as "glass" rather than a flat tint — see
+     the body background-image below. */
+  --glass:rgba(15,23,41,.68);--glass-border:rgba(148,163,184,.14);
 }
-html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.4}
+html,body{height:100%;overflow:hidden;color:var(--text);font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.4;font-variant-numeric:tabular-nums}
+body{
+  background:
+    radial-gradient(1100px 620px at 12% -8%,rgba(26,111,224,.10),transparent 60%),
+    radial-gradient(800px 480px at 100% 0%,rgba(240,179,35,.05),transparent 55%),
+    var(--bg);
+}
 #app{display:flex;height:100vh}
+/* #landing/#mv/#lg/#clubsearch/#club carry tabindex="-1" so screen-reader
+   focus can be moved to the newly-shown view on navigation (see
+   focusView() in banits.js) — they're never reachable via Tab (tabindex
+   -1 excludes them from the tab order), so the focus ring here is purely
+   the browser's default programmatic-focus outline, not a keyboard-nav
+   indicator. Suppressing it avoids a full-viewport outline flashing on
+   every tap/click-driven navigation, which is the overwhelmingly common case. */
+#landing:focus,#mv:focus,#lg:focus,#clubsearch:focus,#club:focus{outline:none}
 
 /* ─── SIDEBAR ─────────────────────────────────────────────── */
-#sb{width:245px;flex-shrink:0;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#sb{width:245px;flex-shrink:0;background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-right:1px solid var(--glass-border);display:flex;flex-direction:column;overflow:hidden}
 .sb-hd{position:relative;padding:14px 13px 10px;border-bottom:1px solid var(--border);flex-shrink:0}
 .sb-hd::after{content:'';position:absolute;bottom:-1px;left:0;width:100%;height:2px;background:var(--wc-gradient)}
 .sb-logo{font-family:var(--cond);font-size:20px;font-weight:900;letter-spacing:.07em;text-transform:uppercase;display:flex;align-items:center;gap:8px;cursor:pointer;transition:opacity .15s;user-select:none;background:linear-gradient(90deg,#EEF2FF 30%,var(--gold) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
@@ -43,11 +77,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sb-logo small{font-size:9px;letter-spacing:.05em;color:var(--dim);font-weight:400;text-transform:none;align-self:flex-end;margin-bottom:2px;-webkit-text-fill-color:var(--dim);background:none}
 .sb-date-nav{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border-bottom:1px solid var(--border);flex-shrink:0;gap:6px}
 .sb-date-nav button{background:var(--card2);border:1px solid var(--border2);color:var(--text);cursor:pointer;padding:5px 10px;border-radius:6px;transition:all .15s;font-size:11px;font-weight:600;display:flex;align-items:center;gap:4px;flex-shrink:0}
-.sb-date-nav button:hover{background:var(--card3);border-color:var(--gold);color:var(--gold)}
+.sb-date-nav button:hover{background:var(--card3);border-color:var(--gold);color:var(--gold);box-shadow:0 0 0 1px rgba(240,179,35,.15)}
 .sb-date-nav button i{font-size:13px}
 #sb-date-lbl{font-size:11px;color:var(--text);font-weight:600;letter-spacing:.03em}
-.dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:5px;vertical-align:middle}
-.dot-on{background:var(--low)}.dot-off{background:var(--dim)}
 #sb-list{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 0}
 #sb-list::-webkit-scrollbar{width:3px}
 #sb-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
@@ -65,13 +97,21 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .badge-md{width:22px;height:22px;object-fit:contain;flex-shrink:0}
 .badge-lg{width:48px;height:48px;object-fit:contain;flex-shrink:0}
 /* Fallback shown when logo image fails to load */
-.badge-fb{display:inline-flex;align-items:center;justify-content:center;border-radius:3px;background:var(--card3);color:var(--dim);font-weight:700;font-family:var(--mono);flex-shrink:0;line-height:1;vertical-align:middle}
+.badge-fb{display:inline-flex;align-items:center;justify-content:center;border-radius:3px;background:var(--card3);color:var(--muted);font-weight:700;font-family:var(--mono);flex-shrink:0;line-height:1;vertical-align:middle}
 .badge-fb.badge-sm{width:16px;height:16px;font-size:8px}
 .badge-fb.badge-md{width:22px;height:22px;font-size:10px}
 .badge-fb.badge-lg{width:48px;height:48px;font-size:11px;border-radius:6px}
 .fix-meta-row{display:flex;justify-content:space-between;align-items:center;margin-top:3px;font-size:9px;color:var(--dim)}
 .live-pip{display:inline-flex;align-items:center;gap:3px;color:var(--high);font-weight:700;font-size:8px}
-.live-pip::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--high);animation:pulse 1.5s infinite;display:inline-block}
+.live-pip::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--high);animation:pulse-glow 1.5s infinite;display:inline-block;box-shadow:0 0 0 0 rgba(212,21,21,.6)}
+/* Same pip, same rhythm as the existing opacity-only `pulse` keyframes
+   (still used elsewhere), but adds an expanding glow ring so a live match
+   reads as "live" even at a glance — the FotMob/BBC red-dot convention. */
+@keyframes pulse-glow{
+  0%{opacity:1;box-shadow:0 0 0 0 rgba(212,21,21,.55)}
+  70%{opacity:.4;box-shadow:0 0 0 6px rgba(212,21,21,0)}
+  100%{opacity:1;box-shadow:0 0 0 0 rgba(212,21,21,0)}
+}
 .sb-ft{padding:10px 12px;border-top:1px solid var(--border);font-size:9px;color:var(--dim);line-height:1.8;flex-shrink:0}
 .sb-ft-ttl{text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--dim);margin-bottom:3px}
 
@@ -92,6 +132,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .lp-league-sel:hover,.lp-league-sel:focus{border-color:var(--cobalt)}
 .lp-league-sel option{background:var(--card2);color:var(--text)}
 .sb-hamburger{display:none;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 12px;background:var(--card2);border:1px solid var(--border2);border-radius:7px;cursor:pointer;color:var(--text);font-size:11px;font-weight:600;flex-shrink:0;white-space:nowrap}
+
+/* Mobile bottom nav — hidden on desktop/tablet; activated at ≤600px (see media query below) */
+.bottom-nav{display:none}
 .sb-hamburger i{font-size:15px}
 .sb-hamburger:hover{border-color:var(--gold);color:var(--gold)}
 
@@ -101,39 +144,59 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .btn-back:hover{border-color:var(--gold);color:var(--gold);background:var(--card3)}
 #main{flex:1;overflow:hidden;display:flex;flex-direction:column;min-width:0}
 /* FIX: Landing no longer centres content — full-page layout */
-#landing{flex:1;overflow-y:auto;display:flex;flex-direction:column;background:var(--bg)}
+/* No solid background here (was var(--bg)) — lets the subtle radial-gradient
+   wash on <body> show through behind the bento cells, so the glass header
+   above has actual texture to blur instead of a flat tint. */
+#landing{flex:1;overflow-y:auto;display:flex;flex-direction:column;background:transparent}
 #landing::-webkit-scrollbar{width:3px}
 #landing::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
 
 /* ─── LANDING PAGE ──────────────────────────────────────────── */
-.lp-hero{position:relative;padding:22px 28px 18px;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.lp-hero{position:relative;padding:22px 28px 18px;border-bottom:1px solid var(--glass-border);background:linear-gradient(120deg,rgba(26,111,224,.10),rgba(15,23,41,.2) 60%),var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:16px}
 .lp-hero::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
 .lp-logo{font-family:var(--cond);font-size:30px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:10px;color:var(--text)}
 .lp-logo i{color:var(--cobalt);font-size:28px}
 .lp-tagline{font-size:10px;color:var(--dim);margin-top:5px;letter-spacing:.04em}
-/* Setup instructions card */
-.lp-setup{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:14px 0 0;font-size:11px}
-.lp-setup-hd{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--cobalt-text);font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.lp-setup-steps{display:flex;flex-direction:column;gap:7px}
-.lp-setup-step{display:flex;align-items:flex-start;gap:10px}
-.lp-setup-n{width:18px;height:18px;border-radius:50%;background:var(--cobalt);color:#fff;font-size:9px;font-weight:800;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:1px}
-.lp-setup-txt{flex:1;color:var(--muted);line-height:1.4}
-.lp-setup-txt b{color:var(--text)}
-.lp-cmd{display:inline-block;background:rgba(0,0,0,.3);border:1px solid var(--border2);border-radius:5px;padding:2px 7px;font-family:var(--mono);font-size:10px;color:var(--gold);margin:3px 0;cursor:pointer;user-select:all;transition:border-color .15s}
-.lp-cmd:hover{border-color:var(--gold)}
-.lp-setup-url{font-family:var(--mono);font-size:10px;color:var(--low);text-decoration:none}
-.lp-setup-url:hover{text-decoration:underline}
 .lp-hero-stats{display:flex;gap:22px;flex-shrink:0}
 .lp-hstat{text-align:center}
 .lp-hstat-n{font-family:var(--mono);font-size:22px;font-weight:700;line-height:1}
 .lp-hstat-l{font-size:8px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-top:4px}
-.lp-body{flex:1;padding:16px 22px 24px;overflow:visible;display:flex;gap:18px;align-items:flex-start}
-.lp-main{flex:1;min-width:0}
-.lp-section{margin-bottom:20px}
-.lp-sec-hd{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:7px;padding-bottom:6px;border-bottom:1px solid var(--border)}
-.lp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px}
-.lp-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:13px 15px;cursor:pointer;transition:all .15s;border-left:3px solid transparent}
-.lp-card:hover{background:var(--card2);border-color:var(--border2);transform:translateY(-1px)}
+
+/* ─── LIVE MATCH SPOTLIGHT ──────────────────────────────────────
+   A featured banner for the day's live match — FotMob/BBC Sport/most
+   betting-site home screens all give live action a distinct, larger
+   treatment instead of leaving it the same size as an untouched fixture
+   card. Team-color radial washes (via inline style, computed from the
+   same tinfo() every other team-colored element already uses) instead of
+   a flat card, oversized crests, and a pulsing live dot make this read as
+   "the thing happening right now" at a glance rather than one more row. */
+.lp-spotlight{position:relative;margin:var(--sp-5) var(--sp-6) 0;border-radius:var(--r-lg);overflow:hidden;background:var(--card);border:1px solid rgba(212,21,21,.25);box-shadow:var(--shadow-2),0 0 0 1px rgba(212,21,21,.08);cursor:pointer;transition:transform .15s,box-shadow .15s}
+.lp-spotlight:hover{transform:translateY(-2px);box-shadow:var(--shadow-2),0 0 32px -8px rgba(212,21,21,.25)}
+.lp-spot-bg{position:absolute;inset:0;pointer-events:none}
+.lp-spot-lbl{position:relative;display:flex;align-items:center;gap:8px;padding:12px 20px 0;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.lp-spot-more{margin-left:auto;color:var(--dim);font-weight:600;text-transform:none;letter-spacing:0}
+.lp-spot-teams{position:relative;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:18px;padding:10px 28px 22px}
+.lp-spot-team{display:flex;align-items:center;gap:14px;min-width:0}
+.lp-spot-team.away{flex-direction:row-reverse;text-align:right}
+.lp-spot-team .badge-lg,.lp-spot-team .badge-fb.badge-lg{width:60px;height:60px;font-size:14px}
+.lp-spot-nm{font-family:var(--cond);font-size:22px;font-weight:800;text-transform:uppercase;letter-spacing:.02em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lp-spot-ctr{text-align:center;flex-shrink:0}
+.lp-spot-sc{font-family:var(--mono);font-size:44px;font-weight:800;line-height:1;color:var(--high);text-shadow:0 0 24px rgba(212,21,21,.35)}
+.lp-spot-min{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--high);margin-top:4px}
+.lp-body{flex:1;padding:var(--sp-5) var(--sp-6) var(--sp-6);overflow:visible;display:flex;gap:var(--sp-5);align-items:flex-start}
+.lp-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:var(--sp-5)}
+/* Bento cell treatment — each landing-page section (favourites, the league
+   dropdown+fixture groups, and the results sidebar) now reads as its own
+   elevated module instead of bare content on the page background. Pure CSS
+   against renderLanding()'s existing markup/classes — no JS/DOM changes,
+   so nothing that already targets these elements (loadResultsPanel(),
+   setLeagueFilter(), the favourites star toggle) had to move. */
+.lp-section{background:var(--card);border:1px solid var(--border);border-radius:var(--r-lg);padding:var(--sp-4) var(--sp-5);box-shadow:var(--shadow-1);margin-bottom:0}
+.lp-fav-section{background:var(--card);border:1px solid rgba(240,179,35,.16);border-radius:var(--r-lg);padding:var(--sp-4) var(--sp-5);box-shadow:var(--shadow-1);margin-bottom:0}
+.lp-sec-hd{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:700;margin-bottom:var(--sp-3);display:flex;align-items:center;gap:7px;padding-bottom:var(--sp-2);border-bottom:1px solid var(--border)}
+.lp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:var(--sp-3)}
+.lp-card{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:13px 15px;cursor:pointer;transition:transform .12s,box-shadow .12s,border-color .12s;border-left:3px solid transparent;box-shadow:var(--shadow-1)}
+.lp-card:hover{border-color:rgba(0,71,181,.3);transform:translateY(-2px);box-shadow:var(--shadow-2)}
 .lp-card.lp-live{border-left-color:var(--high);background:rgba(212,21,21,.05)}
 .lp-card.lp-fin{opacity:.7}
 .lp-card-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
@@ -146,15 +209,20 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .lp-empty i{font-size:36px;color:var(--card2)}
 
 /* ─── RESULTS PANEL (landing page, right column) ─────────────────── */
-.lp-results-col{width:340px;flex-shrink:0;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;align-self:flex-start;position:sticky;top:16px}
+.lp-results-col{width:340px;flex-shrink:0;background:var(--card);border:1px solid var(--border);border-radius:var(--r-lg);padding:var(--sp-4);align-self:flex-start;position:sticky;top:16px;box-shadow:var(--shadow-1)}
 .lp-results-col::-webkit-scrollbar{width:3px}
 .lp-results-col::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
-.lpr-card{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:border-color .15s;border-left:3px solid transparent}
-.lpr-card:hover{border-color:var(--border2)}
+.lpr-card{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .15s;border-left:3px solid transparent;box-shadow:var(--shadow-1)}
+.lpr-card:hover{border-color:var(--border2);box-shadow:var(--shadow-2);transform:translateY(-1px)}
 .lpr-card.lpr-live{border-left-color:var(--high)}
 .lpr-teams{display:flex;align-items:center;gap:6px;margin-bottom:4px}
-.lpr-tm{font-size:11px;font-weight:600;flex:1;display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Ellipsis lives on the inner name span (.lpr-tm-nm), not this flex
+   container — same fix as .lg-team/.lg-team-nm: a flex item's intrinsic
+   content width otherwise keeps the row from shrinking, so long team names
+   push the score off instead of truncating. */
+.lpr-tm{font-size:11px;font-weight:600;flex:1;display:flex;align-items:center;gap:5px;min-width:0}
 .lpr-tm.away{justify-content:flex-end;text-align:right}
+.lpr-tm-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .lpr-sc{font-family:var(--mono);font-size:13px;font-weight:800;flex-shrink:0;min-width:38px;text-align:center;color:var(--text)}
 .lpr-sc.live-sc{color:var(--high)}
 .lpr-status{font-size:9px;color:var(--dim);margin-bottom:6px}
@@ -170,14 +238,18 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 /* ─── MATCH VIEW ────────────────────────────────────────────── */
 #mv{flex:1;overflow:hidden;display:flex;flex-direction:column;min-width:0}
-.mv-hdr{position:relative;background:var(--card);border-bottom:1px solid var(--border);padding:14px 22px;flex-shrink:0}
+.mv-hdr{position:relative;background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-bottom:1px solid var(--glass-border);padding:14px 22px;flex-shrink:0;box-shadow:var(--shadow-1)}
 .mv-hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
 .chip-wc{background:linear-gradient(90deg,rgba(255,199,44,.18),rgba(25,211,142,.18));color:var(--gold);border:1px solid rgba(255,199,44,.35);font-weight:800}
 .mh-comp{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:7px}
 .mh-scores{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6px}
-.mh-team-h{display:flex;flex-direction:column;align-items:flex-start}
-.mh-team-a{display:flex;flex-direction:column;align-items:flex-end}
-.mh-top-row{display:flex;align-items:center;gap:10px}
+/* min-width:0 on both — grid items default to min-width:auto, which sizes
+   to their content's min-content width. .mh-top-row's fixed 48px badge
+   (flex-shrink:0) plus abbreviation text pushes that min-content wide
+   enough to risk overflow at narrow (320-360px) phone widths without this. */
+.mh-team-h{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.mh-team-a{display:flex;flex-direction:column;align-items:flex-end;min-width:0}
+.mh-top-row{display:flex;align-items:center;gap:10px;min-width:0}
 .mh-team-a .mh-top-row{flex-direction:row-reverse}
 .mh-abbr{font-family:var(--cond);font-size:36px;font-weight:900;letter-spacing:.04em;line-height:1}
 .mh-nm{font-size:11px;color:var(--muted);margin-top:2px}
@@ -197,23 +269,20 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .chip-af{background:rgba(58,98,204,.1);color:var(--violet);border:1px solid rgba(58,98,204,.25)}
 
 /* ─── TABS ── FIX: hide the scrollbar on the tab-nav row ───── */
-.tab-nav{display:flex;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0;padding:0 16px;gap:0;overflow-x:auto;scrollbar-width:none}
+.tab-nav{display:flex;border-bottom:1px solid var(--glass-border);background:var(--glass);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);flex-shrink:0;padding:0 16px;gap:0;overflow-x:auto;scrollbar-width:none;position:relative;z-index:2}
 .tab-nav::-webkit-scrollbar{display:none}
-.tab-btn{padding:9px 13px;font-size:11px;font-weight:600;letter-spacing:.03em;color:var(--dim);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .14s;white-space:nowrap}
-.tab-btn:hover{color:var(--muted)}
-.tab-btn.on{color:var(--text);border-bottom-color:var(--gold)}
+.tab-btn{padding:10px 13px;font-size:11px;font-weight:600;letter-spacing:.03em;color:var(--dim);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .16s,border-color .16s,background .16s;white-space:nowrap;border-radius:var(--r-sm) var(--r-sm) 0 0}
+.tab-btn:hover{color:var(--muted);background:rgba(255,255,255,.03)}
+.tab-btn.on{color:var(--text);border-bottom-color:var(--gold);background:rgba(240,179,35,.06)}
 .tab-panels{flex:1;overflow:hidden;position:relative}
 .tab-pnl{position:absolute;inset:0;overflow-y:auto;padding:18px 22px;display:none;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.1) transparent}
 .tab-pnl::-webkit-scrollbar{width:3px}
 .tab-pnl::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
 .tab-pnl.on{display:block}
-/* Inner container caps content width on large screens */
-.tab-inner{max-width:1100px;margin:0 auto}
 /* Auto-constrain tab panels at wide widths without touching JS templates */
 @media(min-width:1400px){
   .tab-pnl.on{display:flex;flex-direction:column;align-items:stretch}
   .tab-pnl.on>*{max-width:1200px;width:100%;margin-left:auto;margin-right:auto;flex-shrink:0}
-  .tab-pnl.on>.sa-cols{max-width:1200px}
   /* Landing page body: cap total width */
   .lp-body{max-width:1600px;margin-left:auto;margin-right:auto;padding-left:28px;padding-right:28px}
   /* Match header: cap width */
@@ -273,12 +342,27 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .pitch-box{text-align:center}
 .pitch-box-lbl{font-size:10px;color:var(--dim);margin-bottom:5px;display:flex;justify-content:space-between;padding:0 2px}
 /* FIX: was 148% (far too tall). 115% gives a more usable formation view */
-.pitch{position:relative;width:100%;padding-top:128%;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);background:linear-gradient(180deg,#1a5c1a 0%,#276827 35%,#276827 65%,#1a5c1a 100%)}
-.pitch::before{content:'';position:absolute;top:50%;left:8%;right:8%;height:1px;background:rgba(255,255,255,.09)}
-.pitch::after{content:'';position:absolute;top:50%;left:50%;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.09);transform:translate(-50%,-50%)}
+/* Mown-turf stripes (repeating band) layered under the existing vertical
+   light/dark gradient, plus real penalty-box/six-yard-box/arc markings
+   (new .pitch-box18/.pitch-box6/.pitch-arc elements, added in the JS
+   template right before the player markers) — previously just a flat
+   green rectangle with a halfway line and center circle, which read as a
+   placeholder rather than an actual pitch next to any real sports app. */
+.pitch{position:relative;width:100%;padding-top:128%;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);background:repeating-linear-gradient(180deg,rgba(255,255,255,.045) 0,rgba(255,255,255,.045) 12.5%,transparent 12.5%,transparent 25%),linear-gradient(180deg,#1a5c1a 0%,#276827 35%,#276827 65%,#1a5c1a 100%)}
+.pitch::before{content:'';position:absolute;top:50%;left:8%;right:8%;height:1px;background:rgba(255,255,255,.14)}
+.pitch::after{content:'';position:absolute;top:50%;left:50%;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.14);transform:translate(-50%,-50%)}
+.pitch-box18{position:absolute;left:19%;right:19%;height:14%;border:1px solid rgba(255,255,255,.14);pointer-events:none;z-index:1}
+.pitch-box18-top{top:0;border-top:none}
+.pitch-box18-bot{bottom:0;border-bottom:none}
+.pitch-box6{position:absolute;left:33%;right:33%;height:6%;border:1px solid rgba(255,255,255,.14);pointer-events:none;z-index:1}
+.pitch-box6-top{top:0;border-top:none}
+.pitch-box6-bot{bottom:0;border-bottom:none}
+.pitch-arc{position:absolute;left:38%;width:24%;height:7%;border:1px solid rgba(255,255,255,.14);border-radius:50%;pointer-events:none;z-index:1}
+.pitch-arc-top{top:10.5%;clip-path:inset(50% 0 0 0)}
+.pitch-arc-bot{bottom:10.5%;clip-path:inset(0 0 50% 0)}
 .pp{position:absolute;transform:translate(-50%,-50%);text-align:center;cursor:default;z-index:2}
 .pp-circ{width:52px;height:52px;border-radius:50%;background:rgba(255,255,255,.18);border:2.5px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;margin:0 auto;font-size:16px;font-weight:800;color:#fff;position:relative;box-shadow:0 2px 8px rgba(0,0,0,.4)}
-.pp-circ.sub-off{background:rgba(212,21,21,.4);border-color:#D41515}
+.pp-circ.sub-off{background:rgba(212,21,21,.4);border-color:var(--high)}
 .pp-num{position:relative;z-index:1;font-family:var(--mono)}
 .pp-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%;z-index:2;background:var(--card2)}
 .pp-circ.sub-off .pp-photo{opacity:.55}
@@ -303,20 +387,29 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sa-bar{animation:barIn .55s cubic-bezier(.4,0,.2,1) both}
 /* ─── PLAYER PHOTO IN ANALYSIS CARD ─────────────────────────── */
 .sa-avatar{width:30px;height:30px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1.5px solid rgba(255,255,255,.12)}
-.sa-avatar-ph{width:30px;height:30px;border-radius:50%;background:rgba(0,71,181,.15);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:rgba(0,71,181,.7)}
+.sa-avatar-ph{width:30px;height:30px;border-radius:50%;background:rgba(0,71,181,.15);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--text)} /* was rgba(0,71,181,.7) on this same background — ~1.6:1 contrast, well under WCAG AA's 4.5:1 for small text; switched to --text (same treatment used everywhere else for text on --card2-family backgrounds) */
+/* Conic-gradient progress ring around the avatar — a compact "at a glance"
+   read of the card-probability number without needing to read the bar or
+   the % text first, the same visual language FotMob/most stat apps use for
+   player-rating badges. --pct/--ring-col are set inline per player (see
+   buildSaCard()/buildClubSquadCard()); the unfilled portion of the ring
+   uses a fixed low-opacity white rather than a token so it reads as
+   "track", not another data color. */
+.sa-avatar-ring{width:36px;height:36px;padding:3px;box-sizing:border-box;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--ring-col,var(--dim)) calc(var(--pct,0)*1%),rgba(255,255,255,.10) 0)}
+.sa-avatar-ring .sa-avatar,.sa-avatar-ring .sa-avatar-ph{width:30px;height:30px}
 /* ─── HIGH-RISK PLAYER HIGHLIGHT ────────────────────────────── */
 .sa-card.danger-card{border-color:rgba(240,179,35,.35)!important;background:linear-gradient(135deg,rgba(240,179,35,.05),var(--card2))}
 .sa-card.danger-card .sa-pct{text-shadow:0 0 12px rgba(240,179,35,.4)}
 /* ─── TOP THREAT BANNER ─────────────────────────────────────── */
 .top-threat{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
-.tt-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;text-align:center;position:relative;overflow:hidden}
+.tt-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;text-align:center;position:relative;overflow:hidden;box-shadow:var(--shadow-1)}
 .tt-label{font-size:8px;text-transform:uppercase;letter-spacing:.07em;font-weight:700;margin-bottom:3px}
 .tt-name{font-size:12px;font-weight:800;color:var(--text);margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tt-pct{font-size:26px;font-weight:900;font-family:var(--cond);color:var(--gold);line-height:1.1}
 .tt-pct.hi{color:var(--high)}.tt-pct.md{color:var(--med)}.tt-pct.lo{color:var(--low)}
 .tt-sub{font-size:8px;color:var(--dim);margin-top:1px}
 /* ─── H2H SECTION ───────────────────────────────────────────── */
-.h2h-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.h2h-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:12px 14px;margin-bottom:14px;box-shadow:var(--shadow-1)}
 .h2h-row{display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(0,0,0,.2)}
 .h2h-row:last-child{border-bottom:none}
 .h2h-date{color:var(--dim);min-width:58px;font-size:9px}
@@ -347,7 +440,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .mh-ctx-team{display:flex;align-items:center;gap:6px}
 .mh-ctx-label{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;min-width:20px}
 /* ─── LEAGUE TABLE ───────────────────────────────────────── */
-.mini-table{background:var(--card2);border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-top:8px}
+.mini-table{background:var(--card2);border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-top:8px;box-shadow:var(--shadow-1)}
 .mini-table-row{display:grid;grid-template-columns:22px 1fr 46px 36px 36px;align-items:center;padding:5px 10px;font-size:10px;gap:4px;border-bottom:1px solid rgba(0,0,0,.2);transition:background .12s}
 .mini-table-row:last-child{border-bottom:none}
 .mini-table-row.hl{background:rgba(0,71,181,.1);border-left:2px solid var(--cobalt)}
@@ -360,7 +453,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .mt-fb{width:8px;height:8px;border-radius:2px;flex-shrink:0}
 .mini-table-gap{text-align:center;color:var(--dim);padding:2px;font-size:11px}
 /* ─── CARD SUMMARY BANNER ────────────────────────────────── */
-.csb{display:flex;align-items:center;background:linear-gradient(135deg,rgba(0,71,181,.08),rgba(5,12,30,0));border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:14px;gap:8px}
+.csb{display:flex;align-items:center;background:linear-gradient(135deg,rgba(0,71,181,.08),rgba(5,12,30,0));border:1px solid var(--border);border-radius:var(--r-md);padding:14px 18px;margin-bottom:14px;gap:8px;box-shadow:var(--shadow-1)}
 .csb-team{flex:1;text-align:center;min-width:0}
 .csb-nm{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
 .csb-num{font-size:30px;font-weight:900;font-family:var(--cond);line-height:1;letter-spacing:-.02em}
@@ -374,15 +467,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 /* ─── REF BADGE ──────────────────────────────────────────── */
 .ref-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted)}
 /* ─── CONTEXT SECTION ────────────────────────────────────── */
-.ctx-panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.ctx-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow-1)}
 .ctx-sec-hd{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--cobalt-text);font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:5px}
 .ctx-form-row{display:flex;align-items:center;gap:10px;margin-bottom:5px}
 .ctx-form-nm{font-size:10px;font-weight:700;min-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* ─── LANDING CARD IMPROVEMENTS ─────────────────────────── */
-.lp-card{transition:transform .12s,box-shadow .12s,border-color .12s}
-.lp-card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.35);border-color:rgba(0,71,181,.3)}
-.lp-card.lp-live{border-left:2px solid var(--high)}
-.lp-card.lp-fin{opacity:.85}
 /* ─── POSITION BADGE IN TABLE ────────────────────────────── */
 .pos-badge{display:inline-flex;align-items:center;justify-content:center;background:rgba(0,71,181,.15);border:1px solid rgba(0,71,181,.25);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;color:var(--cobalt-text);font-family:var(--mono)}
 /* Kit number pill in analysis cards */
@@ -445,10 +533,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sa-xi-bench{color:var(--dim);margin-top:16px}
 /* Bench player cards slightly dimmed */
 .sa-card.bench-card{opacity:.8}
-.sa-card{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:7px;cursor:pointer;transition:border-color .14s}
-.sa-card:hover{border-color:var(--border2)}
+.sa-card{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;margin-bottom:7px;cursor:pointer;box-shadow:var(--shadow-1);transition:border-color .16s,transform .16s,box-shadow .16s}
+.sa-card:hover{border-color:var(--border2);transform:translateY(-2px);box-shadow:var(--shadow-2)}
 .sa-card.low-conf{border-style:dashed;opacity:.85}
 .sa-card.no-data-card{opacity:.5}
+.sa-card.injury-card{opacity:.62;border-color:rgba(212,21,21,.3)}
 .sa-card.open{border-color:var(--border2)}
 .sa-expand{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:none}
 .sa-card.open .sa-expand{display:block}
@@ -493,7 +582,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .mu-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:900px){.mu-grid{grid-template-columns:1fr}}
 .mu-sec-hd{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border)}
-.mu-card{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;background:var(--card2);border:1px solid var(--border);border-radius:9px;padding:11px 12px;margin-bottom:8px}
+.mu-card{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:11px 12px;margin-bottom:8px;box-shadow:var(--shadow-1);transition:transform .16s,box-shadow .16s,border-color .16s}
+.mu-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-2);border-color:var(--border2)}
 .mu-side{min-width:0}
 .mu-side-r{text-align:right}
 .mu-role{font-size:8px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:700;margin-bottom:2px}
@@ -511,7 +601,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 /* ─── TOP PICKS TAB ────────────────────────────────────────────── */
 .tp-list{display:flex;flex-direction:column;gap:6px}
-.tp-row{display:flex;flex-direction:column;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.tp-row{display:flex;flex-direction:column;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;box-shadow:var(--shadow-1);transition:transform .16s,box-shadow .16s,border-color .16s}
+.tp-row:hover{transform:translateY(-2px);box-shadow:var(--shadow-2);border-color:var(--border2)}
 .tp-row-top{display:flex;align-items:center;gap:10px}
 .tp-rank{font-family:var(--mono);font-size:11px;color:var(--dim);font-weight:700;flex-shrink:0;width:22px}
 .tp-photo{width:32px;height:32px;border-radius:50%;object-fit:cover;flex-shrink:0;background:var(--card3);border:1px solid var(--border2)}
@@ -527,7 +618,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 .tp-foul-hdr{display:grid;grid-template-columns:28px 28px 1fr 40px 1fr 64px 46px 46px 46px;gap:8px;padding:0 12px 6px;font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:700}
 .tp-foul-hdr span:nth-child(6),.tp-foul-hdr span:nth-child(7),.tp-foul-hdr span:nth-child(8),.tp-foul-hdr span:nth-child(9){text-align:right}
-.tp-foul-row{display:grid;grid-template-columns:28px 28px 1fr 40px 1fr 64px 46px 46px 46px;gap:8px;align-items:center;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:9px 12px}
+.tp-foul-row{display:grid;grid-template-columns:28px 28px 1fr 40px 1fr 64px 46px 46px 46px;gap:8px;align-items:center;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;box-shadow:var(--shadow-1);transition:transform .16s,box-shadow .16s,border-color .16s}
+.tp-foul-row:hover{transform:translateY(-2px);box-shadow:var(--shadow-2);border-color:var(--border2)}
 .tp-foul-row .tp-photo-sm{width:24px;height:24px;border-radius:50%;object-fit:cover;background:var(--card3);border:1px solid var(--border2)}
 .tp-foul-row .tp-fc{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:right;font-weight:700}
 .tp-foul-row .tp-pct{font-size:13px}
@@ -622,7 +714,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .lpwc-fix-teams{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;font-weight:600}
 .lpwc-fix-sc{font-family:var(--mono);font-weight:800;color:var(--text);flex-shrink:0}
 
-.pred-wrap{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:13px}
+.pred-wrap{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:13px;box-shadow:var(--shadow-1)}
 .pred-teams{display:flex;justify-content:space-between;font-size:12px;font-weight:600;margin-bottom:9px}
 .pred-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;gap:2px}
 .pred-pcts{display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-top:6px}
@@ -630,7 +722,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .pw-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:4px}
 .pw-val{font-size:14px;font-weight:600;color:var(--low)}
 .odds-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:13px}
-.odds-card{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center}
+.odds-card{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center;box-shadow:var(--shadow-1)}
 .odds-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:5px}
 .odds-val{font-size:20px;font-weight:700;font-family:var(--mono)}
 .odds-imp{font-size:10px;color:var(--dim);margin-top:4px}
@@ -638,7 +730,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .odds-value-pos{color:var(--low);background:rgba(0,184,118,.12);border:1px solid rgba(0,184,118,.25)}
 .odds-value-neg{color:var(--dim);background:rgba(255,255,255,.03);border:1px solid var(--border)}
 .goals-grid{display:flex;gap:8px;margin-bottom:13px}
-.goals-card{flex:1;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center}
+.goals-card{flex:1;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center;box-shadow:var(--shadow-1)}
 .odds-sec-ttl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;margin:13px 0 7px}
 
 /* ─── WC 2026 HUB ──────────────────────────────────────────── */
@@ -647,6 +739,75 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .sb-home-btn i{color:var(--gold)}
 /* Show the sidebar home button only on mobile */
 @media(max-width:600px){.sb-home-btn{display:flex}}
+
+/* ─── LEAGUES (STANDINGS) VIEW ─────────────────────────────── */
+.sb-nav-btn{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);transition:all .14s}
+.sb-nav-btn:hover{background:rgba(255,199,44,.06);color:var(--gold)}
+.sb-nav-btn i{color:var(--gold)}
+#lg{height:100%;display:flex;flex-direction:column;overflow:hidden}
+.lg-hdr{position:relative;background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-bottom:1px solid var(--glass-border);padding:14px 22px;flex-shrink:0;box-shadow:var(--shadow-1)}
+.lg-hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
+.lg-hdr-ttl{font-family:var(--cond);font-size:20px;font-weight:900;letter-spacing:.04em;display:flex;align-items:center;gap:8px}
+.lg-hdr-ttl i{color:var(--gold)}
+.lg-body{flex:1;overflow-y:auto;padding:16px 22px 32px}
+.lg-table{max-width:900px;margin:0 auto;background:var(--card2);border-radius:var(--r-lg);overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow-1)}
+.lg-row{display:grid;grid-template-columns:32px 1fr repeat(7,34px) 44px 74px;align-items:center;gap:6px;padding:9px 12px;font-size:11px;border-bottom:1px solid rgba(0,0,0,.2);transition:background .14s}
+.lg-row:last-child{border-bottom:none}
+.lg-row:not(.lg-head){cursor:pointer}
+.lg-row:not(.lg-head):hover{background:rgba(255,255,255,.04)}
+.lg-row.lg-row-hl{background:rgba(240,179,35,.08);border-left:3px solid var(--gold)}
+.lg-row.lg-row-hl:hover{background:rgba(240,179,35,.13)}
+.lg-head{background:var(--card3);color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;position:sticky;top:0}
+.lg-pos{color:var(--dim);font-family:var(--mono);text-align:center;font-size:10px}
+.lg-team{display:flex;align-items:center;gap:8px;font-weight:600;min-width:0}
+.lg-team-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.lg-n{text-align:center;font-family:var(--mono);color:var(--muted)}
+.lg-n-dim{color:var(--dim)}
+.lg-pts{text-align:center;font-family:var(--mono);font-weight:800;color:var(--text)}
+.lg-form{display:flex;gap:3px;justify-content:flex-end}
+.lg-head .lg-form{justify-content:flex-end}
+@media(max-width:700px){
+  .lg-body{padding:10px}
+  .lg-row{grid-template-columns:24px minmax(50px,1fr) repeat(4,24px) 36px 54px;font-size:10px;gap:4px}
+  /* Hide GF/GA/GD on small screens, keep P/W/D/L/Pts/Form — team names were
+     truncating to 1-2 characters (2026-08-25) with all 7 stat columns kept;
+     minmax(50px,1fr) also guarantees the name column a usable floor instead
+     of shrinking to whatever's left over. */
+  .lg-n-opt{display:none}
+}
+
+/* ─── Club Search + Club page (SECTION 15c) ──────────────────── */
+#clubsearch,#club{height:100%;display:flex;flex-direction:column;overflow:hidden}
+.club-search-input{
+  width:100%;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r-md);
+  color:var(--text);font-size:14px;padding:12px 14px;margin-bottom:14px;
+  transition:border-color .15s,box-shadow .15s;
+}
+.club-search-input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(240,179,35,.12)}
+.club-search-row{
+  display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card2);
+  border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:8px;cursor:pointer;
+  transition:border-color .15s,box-shadow .15s,transform .15s;box-shadow:var(--shadow-1);
+}
+.club-search-row:hover{border-color:var(--border2);box-shadow:var(--shadow-2);transform:translateY(-1px)}
+.club-search-nm{font-weight:600;flex:1}
+.club-search-lg{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+.club-hero{display:flex;align-items:center;gap:14px;margin-top:8px}
+.club-hero-nm{font-family:var(--cond);font-size:26px;font-weight:900;letter-spacing:.02em}
+.club-hero-sub{font-size:11px;color:var(--muted);margin-top:2px}
+/* Faded oversized crest sitting behind the header content — clipped by
+   #club-hdr's own overflow:hidden (below) so it can never push the page
+   wider or spill past the header edge on narrow viewports. */
+.club-hero-watermark{position:absolute;top:-18%;right:-2%;width:230px;height:230px;background-size:contain;background-repeat:no-repeat;background-position:center;opacity:.06;filter:saturate(0) brightness(2);pointer-events:none;z-index:0}
+#club-hdr{overflow:hidden}
+.club-squad-grp-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:700;margin:18px 0 8px}
+.club-squad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+@media(max-width:600px){
+  .club-hero-nm{font-size:21px}
+  .club-squad-grid{grid-template-columns:1fr}
+  .club-hero-watermark{width:150px;height:150px;top:-10%}
+}
+
 .wc-hdr{position:relative;background:var(--card);border-bottom:1px solid var(--border);padding:14px 22px;flex-shrink:0}
 .wc-hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
 .wc-hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
@@ -746,10 +907,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 
 /* A. Wide desktop — content cap so nothing stretches beyond readability */
 @media(min-width:1400px){
-  .tab-inner{max-width:1200px}
   .lp-main .lp-grid{grid-template-columns:repeat(auto-fill,minmax(270px,1fr))}
   .lp-results-col{width:360px}
-  .sa-cols{grid-template-columns:1fr 1fr;gap:24px}
+  .sa-grid{grid-template-columns:1fr 1fr;gap:24px}
   .mu-grid{grid-template-columns:1fr 1fr;gap:20px}
   .wcp-grid{grid-template-columns:repeat(4,1fr)}
   .wc-groups-grid{grid-template-columns:repeat(4,1fr)}
@@ -784,10 +944,20 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   .sb-hamburger{display:flex!important}
   /* Header adapts */
   .lp-hero{flex-direction:column;gap:8px;padding:12px 16px}
+  .lp-spotlight{margin:12px 14px 0}
+  .lp-spot-teams{grid-template-columns:1fr auto 1fr;gap:8px;padding:8px 14px 16px}
+  .lp-spot-team{gap:8px}
+  .lp-spot-team .badge-lg,.lp-spot-team .badge-fb.badge-lg{width:40px;height:40px;font-size:11px}
+  .lp-spot-nm{font-size:14px}
+  .lp-spot-sc{font-size:30px}
   .lp-hero-stats{gap:14px}
   .mh-abbr{font-size:24px}
   .mh-sc{font-size:28px}
   .tab-pnl{padding:12px 14px}
+  /* Base .lp-body padding (20px/28px/28px) is desktop-scaled — every sibling
+     content container gets a tighter mobile override except this one, which
+     was eating a disproportionate chunk of a ~375px viewport's width. */
+  .lp-body{padding:12px 14px}
   .wcp-grid{grid-template-columns:1fr}
   .wc-groups-grid{grid-template-columns:1fr 1fr}
   .tp-foul-hdr,.tp-foul-row{grid-template-columns:24px 24px 1fr 50px 50px 50px}
@@ -795,4 +965,44 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   .mu-card{grid-template-columns:1fr 32px 1fr}
   .lp-grid{grid-template-columns:1fr}
   .pitch-grid{grid-template-columns:1fr!important}
+
+  /* Mobile bottom nav — one-tap access to Fixtures/Leagues/Menu instead of
+     hamburger→drawer→tap. Glass bar pinned to the safe area. */
+  .bottom-nav{
+    display:flex;position:fixed;left:0;right:0;bottom:0;z-index:60;
+    background:var(--glass);
+    backdrop-filter:blur(18px) saturate(140%);
+    -webkit-backdrop-filter:blur(18px) saturate(140%);
+    border-top:1px solid var(--glass-border);
+    box-shadow:0 -4px 24px rgba(0,0,0,.35);
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));
+  }
+  .bn-btn{
+    flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+    background:transparent;border:none;color:var(--muted);
+    font-size:10px;font-weight:600;letter-spacing:.02em;
+    padding:6px 4px;border-radius:var(--r-sm);cursor:pointer;
+    transition:color .15s,background .15s;min-height:44px;-webkit-tap-highlight-color:transparent;
+  }
+  .bn-btn i{font-size:19px}
+  .bn-btn:active{background:var(--card2)}
+  .bn-btn.on{color:var(--gold)}
+
+  /* Reserve space so the fixed bottom nav never covers the last row of
+     content. The bottom nav's own height grows with the device's safe-area
+     inset (see .bottom-nav's padding above), so these reserves need to grow
+     with it too on notched/gesture-bar phones — a fixed px reserve alone
+     left a gap that shrank to nothing (or went negative) on those devices. */
+  #landing{padding-bottom:calc(64px + env(safe-area-inset-bottom,0px))}
+  .tab-pnl{padding-bottom:calc(78px + env(safe-area-inset-bottom,0px))}
+  .lg-body{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px))}
+
+  /* Touch targets — several controls sit well under the ~44px minimum
+     recommended for touch (WCAG 2.5.5 / platform HIG guidance). Scoped to
+     mobile only so desktop keeps its tighter, mouse-appropriate density. */
+  .tab-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .sb-date-nav button{min-height:44px}
+  .stog-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center;padding:3px 12px}
+  .btn-back{height:44px}
+  .pitch-stat-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
 }
