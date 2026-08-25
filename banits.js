@@ -180,11 +180,19 @@ function ordinal(n){
 // means less pulled and processed everywhere downstream. Add/remove IDs
 // here to change what's tracked; league IDs are API-Football's, reused from
 // MAIN_LEAGUE_IDS below.
+// 2026-08-25: added the FA Cup (45) and League Cup (48) per explicit user
+// request — both already had a LEAGUE_RANK entry (8/9) from the original
+// 2026-08-23 filtering work, so sort order needed no change, only the
+// whitelist itself. These are single-table-less knockout cups, so they're
+// deliberately NOT added to LEAGUE_META (the League Tables tab/Club Search
+// index, both standings-based — a cup has no league table to show).
 const TRACKED_LEAGUES = new Set([
   39,   // England — Premier League
   40,   // England — Championship
   41,   // England — League One
   42,   // England — League Two
+  45,   // England — FA Cup
+  48,   // England — League Cup (Carabao Cup)
   61,   // France — Ligue 1
   140,  // Spain — La Liga
   78,   // Germany — Bundesliga
@@ -2144,6 +2152,7 @@ function buildHeader(fx,ht,at){
   const hGrad=h2r(ht.c,0.14);
   const aGrad=h2r(at.c,0.14);
   return`<div>
+    <h1 class="sr-only">${t.home.name} vs ${t.away.name}${live?' — live':fin?' — final':''}</h1>
     <!-- Team colour gradient overlay -->
     <div class="mv-hdr-grad" style="background:linear-gradient(90deg,${hGrad} 0%,transparent 40%,transparent 60%,${aGrad} 100%)"></div>
     <div class="mv-hdr-top-bar" style="background:linear-gradient(90deg,${ht.c},${at.c})"></div>
@@ -2233,7 +2242,7 @@ function buildOverviewTab(fx,ht,at){
   h+='<div class="two-col">';
 
   // Events
-  h+=`<div><div class="stitle"><i class="ti ti-timeline-event"></i>Match events</div>`;
+  h+=`<div><h2 class="stitle"><i class="ti ti-timeline-event"></i>Match events</h2>`;
   if(events.length){
     h+='<div class="ev-list">';
     for(const ev of events){
@@ -2290,7 +2299,7 @@ function buildOverviewTab(fx,ht,at){
   h+='</div>';
 
   // Team stats
-  h+=`<div><div class="stitle"><i class="ti ti-chart-bar"></i>Team statistics</div>`;
+  h+=`<div><h2 class="stitle"><i class="ti ti-chart-bar"></i>Team statistics</h2>`;
   if(stats.length>=2){
     const hSt=stats.find(s=>s.team.id===hId)?.statistics||[];
     const aSt=stats.find(s=>s.team.id!==hId)?.statistics||[];
@@ -2620,7 +2629,7 @@ function buildMatchupsTab(fx,ht,at){
   return`<div class="tip-box">
     <strong style="color:var(--violet)">ℹ How to read this</strong> — these pairings are a heuristic based on player role and season tendencies, not actual marking assignments (tactical/marking data isn't available). An attacker ranked by take-ons (dribble attempts/90) is paired against the opposition's most foul-prone defender/midfielder by role. The "tier" reflects how often this type of matchup tends to produce fouls — not a probability of a specific event.
   </div>
-  <div class="stitle"><i class="ti ti-swords"></i>Likely duel matchups <span class="chip chip-af" style="margin-left:6px">Heuristic</span></div>
+  <h2 class="stitle"><i class="ti ti-swords"></i>Likely duel matchups <span class="chip chip-af" style="margin-left:6px">Heuristic</span></h2>
   <div class="mu-grid">
     <div>${buildMatchupSection(`${fx.teams.home.name} attack vs ${fx.teams.away.name} defence`, homeAtk, awayDef, ht.c, at.c)}</div>
     <div>${buildMatchupSection(`${fx.teams.away.name} attack vs ${fx.teams.home.name} defence`, awayAtk, homeDef, at.c, ht.c)}</div>
@@ -2784,10 +2793,10 @@ function buildTopPicksTab(fx,ht,at){
     : `<div class="no-data" style="padding:16px"><i class="ti ti-ban"></i>No foul-rate data available for this match's competitions.</div>`;
 
   return`${banner}
-  <div class="stitle"><i class="ti ti-shield-check"></i>Most likely to be booked <span class="chip chip-af" style="margin-left:6px">P(yellow card)</span></div>
+  <h2 class="stitle"><i class="ti ti-shield-check"></i>Most likely to be booked <span class="chip chip-af" style="margin-left:6px">P(yellow card)</span></h2>
   <div class="tp-list" style="margin-bottom:22px">${bookingHtml}</div>
 
-  <div class="stitle"><i class="ti ti-flag"></i>Most likely to commit fouls <span class="chip chip-af" style="margin-left:6px">Poisson, λ = FC/90</span></div>
+  <h2 class="stitle"><i class="ti ti-flag"></i>Most likely to commit fouls <span class="chip chip-af" style="margin-left:6px">Poisson, λ = FC/90</span></h2>
   <div style="font-size:10px;color:var(--dim);margin-bottom:10px">
     P(1+), P(2+), P(3+) = probability of committing at least that many fouls this match, assuming a full 90 minutes at this season's foul rate.
   </div>
@@ -2929,7 +2938,7 @@ function buildLiveStatsTab(fx,ht,at){
   };
 
   return`<div>
-    <div class="stitle"><i class="ti ti-activity"></i>Player match statistics <span class="chip chip-live" style="margin-left:6px">${live?'LIVE':'MATCH DATA'}</span></div>
+    <h2 class="stitle"><i class="ti ti-activity"></i>Player match statistics <span class="chip chip-live" style="margin-left:6px">${live?'LIVE':'MATCH DATA'}</span></h2>
     <div style="font-size:10px;color:var(--dim);margin-bottom:12px">Sorted by fouls committed · 🔴 4+ fouls · 🟡 2-3 fouls · FC = committed · FD = drawn · data from single API call</div>
     <div class="ls-wrap">
       <table class="ls-tbl">
@@ -3124,11 +3133,11 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
   </div>`:'';
 
   return`${banner}${refBanner}${cardBanner}${threatBanner}
-  <div class="stitle"><i class="ti ti-target"></i>Card probability — season analysis
+  <h2 class="stitle"><i class="ti ti-target"></i>Card probability — season analysis
     <span class="chip chip-af" style="margin-left:6px">Poisson model</span>
     ${isIntl&&(src==='club'||src==='squad')?`<span class="chip" style="margin-left:4px;background:rgba(0,184,118,.12);color:var(--low);border:1px solid rgba(0,184,118,.25)">Club stats</span>`:''}
     ${isIntl&&src==='squad'?`<span class="chip" style="margin-left:4px;background:rgba(240,179,35,.1);color:var(--gold);border:1px solid rgba(240,179,35,.25)">Full squad</span>`:''}
-  </div>
+  </h2>
   <div style="font-size:10px;color:var(--dim);margin-bottom:14px">
     P(yellow card this match) · click a player to see the full breakdown and source
   </div>
@@ -3253,7 +3262,7 @@ function buildOddsTab(predData,oddsData,fx,ht,at){
     Win probability models and bookmaker odds are typically published 48–72 hours before kickoff, and may not be available for all competitions.</div>`;
   }
 
-  let h=`<div class="stitle"><i class="ti ti-trending-up"></i>Predictions</div>`;
+  let h=`<h2 class="stitle"><i class="ti ti-trending-up"></i>Predictions</h2>`;
   // Declared at function scope (not inside `if(pred)`) so the value-vs-odds
   // block further down — inside a separate `if(bets.length)` block — can
   // still read them.
@@ -3577,7 +3586,7 @@ function renderLanding(){
     <div style="display:flex;align-items:center;gap:12px">
       <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i class="ti ti-menu-2"></i> Menu</div>
       <div>
-        <div class="lp-logo"><i class="ti ti-shield-bolt"></i>Banits Betting</div>
+        <h1 class="lp-logo"><i class="ti ti-shield-bolt"></i>Banits Betting</h1>
         <div class="lp-tagline">${dayLabel(d)} · Match analysis & card probability</div>
       </div>
     </div>
@@ -4037,7 +4046,7 @@ function buildClubHeaderShell(entry, info, rank, totalTeams){
     <div class="club-hero">
       ${badge(entry.logo,'lg',entry.name)}
       <div>
-        <div class="club-hero-nm" style="color:${info.c}">${entry.name}</div>
+        <h1 class="club-hero-nm" style="color:${info.c}">${entry.name}</h1>
         <div class="club-hero-sub">${entry.country} &middot; ${entry.leagueName}</div>
       </div>
     </div>
@@ -4170,10 +4179,10 @@ async function loadClubPage(teamId){
   const recent=(last5?.response||[]).slice().reverse(); // API returns oldest→newest; most-recent-first reads better
   const upcoming=next3?.response||[];
   bodyHtml += `<div class="two-col">
-    <div><div class="stitle"><i class="ti ti-history"></i>Recent results</div>
+    <div><h2 class="stitle"><i class="ti ti-history"></i>Recent results</h2>
       ${recent.length ? recent.map(renderLpCard).join('') : `<div class="no-data" style="padding:16px"><i class="ti ti-calendar-off"></i>No recent results found.</div>`}
     </div>
-    <div><div class="stitle"><i class="ti ti-calendar-event"></i>Upcoming fixtures</div>
+    <div><h2 class="stitle"><i class="ti ti-calendar-event"></i>Upcoming fixtures</h2>
       ${upcoming.length ? upcoming.map(renderLpCard).join('') : `<div class="no-data" style="padding:16px"><i class="ti ti-calendar-off"></i>No upcoming fixtures scheduled yet.</div>`}
     </div>
   </div>`;
@@ -4184,7 +4193,7 @@ async function loadClubPage(teamId){
   const squadData = squadRes?.data;
   const squadErr = squadRes?.error;
   const squadPlayers = squadData?.response?.[0]?.players || [];
-  bodyHtml += `<div class="stitle"><i class="ti ti-users"></i>Squad</div>
+  bodyHtml += `<h2 class="stitle"><i class="ti ti-users"></i>Squad</h2>
     <div id="club-squad-body">${squadPlayers.length
       ? `<div class="ld-msg"><div class="spnr"></div>Fetching club stats for ${squadPlayers.length} squad players — requests are rate-limited to ~1/sec, so this can take ${Math.ceil(squadPlayers.length*1.1/10)*10}–${Math.ceil(squadPlayers.length*1.4/10)*10}s…</div>`
       : squadErr

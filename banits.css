@@ -1,4 +1,9 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+/* Visually-hidden but screen-reader-accessible — standard accessible-name
+   pattern, used for the match view's <h1> (its content title has no single
+   headline text visually — it's "Home vs Away" split across the header —
+   but semantics still need exactly one page-level heading per view). */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 :root{
   /* ── BIRMINGHAM CITY FC THEME ────────────────────────────────
      Home  25/26: Hyper Cobalt (#0047B5) + Jersey Gold (#F0B323) + White
@@ -116,10 +121,20 @@ body{
 .sb-ft-ttl{text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--dim);margin-bottom:3px}
 
 /* ─── SEASON TOGGLE ──────────────────────────────────────────── */
-.sb-season-tog{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0;gap:8px}
+/* Stacked (label above, buttons in their own full-width row) rather than
+   the original single-line "label ... [25/26][26/27][Both]" layout — with
+   all three season buttons plus the "Both" option restored, a single row
+   didn't reliably fit inside the 245px sidebar on every system (real-world
+   report: the third button rendered clipped/invisible on a 2K desktop
+   display, even though it happened to fit in this session's own headless-
+   Chromium screenshots — font-rendering width isn't identical everywhere).
+   Stacking removes the squeeze entirely: the buttons row gets the sidebar's
+   full usable width regardless of how wide "Season data" or any given
+   season label renders. */
+.sb-season-tog{display:flex;flex-direction:column;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
 .sb-season-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:700;white-space:nowrap}
-.sb-season-btns{display:flex;gap:3px}
-.stog-btn{background:var(--card2);border:1px solid var(--border);color:var(--dim);font-size:9px;font-weight:700;padding:3px 8px;border-radius:4px;cursor:pointer;transition:all .15s;font-family:var(--mono)}
+.sb-season-btns{display:flex;gap:4px}
+.stog-btn{flex:1;background:var(--card2);border:1px solid var(--border);color:var(--dim);font-size:9px;font-weight:700;padding:5px 6px;border-radius:4px;cursor:pointer;transition:all .15s;font-family:var(--mono);text-align:center;white-space:nowrap}
 .stog-btn:hover{border-color:var(--border2);color:var(--muted)}
 .stog-btn.on{background:rgba(0,71,181,.2);border-color:var(--cobalt);color:var(--cobalt-text)}
 /* ─── SIDEBAR LEAGUE FILTER ──────────────────────────────────── */
@@ -154,7 +169,7 @@ body{
 /* ─── LANDING PAGE ──────────────────────────────────────────── */
 .lp-hero{position:relative;padding:22px 28px 18px;border-bottom:1px solid var(--glass-border);background:linear-gradient(120deg,rgba(26,111,224,.10),rgba(15,23,41,.2) 60%),var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:16px}
 .lp-hero::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
-.lp-logo{font-family:var(--cond);font-size:30px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:10px;color:var(--text)}
+.lp-logo{font-family:var(--cond);font-size:30px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:10px;color:var(--text);margin:0}
 .lp-logo i{color:var(--cobalt);font-size:28px}
 .lp-tagline{font-size:10px;color:var(--dim);margin-top:5px;letter-spacing:.04em}
 .lp-hero-stats{display:flex;gap:22px;flex-shrink:0}
@@ -294,7 +309,7 @@ body{
 }
 
 /* ─── SHARED COMPONENTS ─────────────────────────────────────── */
-.stitle{font-family:var(--cond);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.stitle{font-family:var(--cond);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .stitle i{color:var(--gold);font-size:13px}
 .no-data{text-align:center;color:var(--dim);padding:36px 20px;font-size:12px;line-height:1.8}
 .no-data i{font-size:32px;display:block;margin-bottom:10px;color:var(--card2)}
@@ -715,19 +730,33 @@ body{
 .lpwc-fix-sc{font-family:var(--mono);font-weight:800;color:var(--text);flex-shrink:0}
 
 .pred-wrap{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:13px;box-shadow:var(--shadow-1)}
+/* Sportsbook-style overlay on the win-probability bar — a soft diagonal
+   sheen, the same "glassy button" gloss most odds/price UI uses to read as
+   tappable rather than a flat progress bar. Pure decoration, ::after so it
+   never affects the bar's actual layout/width math above it. */
+.pred-bar{position:relative;overflow:hidden}
+.pred-bar::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,0) 55%);pointer-events:none}
 .pred-teams{display:flex;justify-content:space-between;font-size:12px;font-weight:600;margin-bottom:9px}
 .pred-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;gap:2px}
 .pred-pcts{display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-top:6px}
-.pred-winner{background:rgba(0,184,118,.08);border:1px solid rgba(0,184,118,.2);border-radius:8px;padding:11px;margin-bottom:12px;text-align:center}
+.pred-winner{background:rgba(0,184,118,.08);border:1px solid rgba(0,184,118,.2);border-radius:8px;padding:11px 11px 11px 16px;margin-bottom:12px;text-align:center;position:relative;overflow:hidden}
+/* Gold-on-green left accent bar — the "this is the headline call" marker,
+   same visual language a sportsbook uses to mark its favourite/top pick. */
+.pred-winner::before{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--gold),var(--low))}
 .pw-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:4px}
 .pw-val{font-size:14px;font-weight:600;color:var(--low)}
 .odds-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:13px}
-.odds-card{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center;box-shadow:var(--shadow-1)}
+/* Sportsbook-style price button — bolder border + a hover lift/glow so
+   each odds box reads as a distinct, tappable price rather than a plain
+   stat tile (matches the "clickable price" convention on every real
+   betting-site odds grid, even though this app never places a bet). */
+.odds-card{background:linear-gradient(180deg,var(--card2),var(--card3));border:1px solid var(--border2);border-radius:var(--r-md);padding:12px 11px;text-align:center;box-shadow:var(--shadow-1);transition:transform .15s,box-shadow .15s,border-color .15s}
+.odds-card:hover{transform:translateY(-2px);border-color:rgba(240,179,35,.4);box-shadow:var(--shadow-gold)}
 .odds-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:5px}
-.odds-val{font-size:20px;font-weight:700;font-family:var(--mono)}
+.odds-val{font-size:22px;font-weight:800;font-family:var(--mono);color:var(--gold)}
 .odds-imp{font-size:10px;color:var(--dim);margin-top:4px}
 .odds-value-tag{font-size:10px;font-weight:700;font-family:var(--mono);margin-top:6px;padding:2px 6px;border-radius:4px;display:inline-block}
-.odds-value-pos{color:var(--low);background:rgba(0,184,118,.12);border:1px solid rgba(0,184,118,.25)}
+.odds-value-pos{color:var(--low);background:rgba(0,184,118,.14);border:1px solid rgba(0,184,118,.3);box-shadow:0 0 12px -4px rgba(0,184,118,.5)}
 .odds-value-neg{color:var(--dim);background:rgba(255,255,255,.03);border:1px solid var(--border)}
 .goals-grid{display:flex;gap:8px;margin-bottom:13px}
 .goals-card{flex:1;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center;box-shadow:var(--shadow-1)}
@@ -747,7 +776,7 @@ body{
 #lg{height:100%;display:flex;flex-direction:column;overflow:hidden}
 .lg-hdr{position:relative;background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-bottom:1px solid var(--glass-border);padding:14px 22px;flex-shrink:0;box-shadow:var(--shadow-1)}
 .lg-hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
-.lg-hdr-ttl{font-family:var(--cond);font-size:20px;font-weight:900;letter-spacing:.04em;display:flex;align-items:center;gap:8px}
+.lg-hdr-ttl{font-family:var(--cond);font-size:20px;font-weight:900;letter-spacing:.04em;display:flex;align-items:center;gap:8px;margin:0}
 .lg-hdr-ttl i{color:var(--gold)}
 .lg-body{flex:1;overflow-y:auto;padding:16px 22px 32px}
 .lg-table{max-width:900px;margin:0 auto;background:var(--card2);border-radius:var(--r-lg);overflow:hidden;border:1px solid var(--border);box-shadow:var(--shadow-1)}
@@ -793,7 +822,7 @@ body{
 .club-search-nm{font-weight:600;flex:1}
 .club-search-lg{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
 .club-hero{display:flex;align-items:center;gap:14px;margin-top:8px}
-.club-hero-nm{font-family:var(--cond);font-size:26px;font-weight:900;letter-spacing:.02em}
+.club-hero-nm{font-family:var(--cond);font-size:26px;font-weight:900;letter-spacing:.02em;margin:0}
 .club-hero-sub{font-size:11px;color:var(--muted);margin-top:2px}
 /* Faded oversized crest sitting behind the header content — clipped by
    #club-hdr's own overflow:hidden (below) so it can never push the page
