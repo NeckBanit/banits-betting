@@ -565,6 +565,51 @@ a:focus-visible{
 .calib-box{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:14px;font-size:10px;color:var(--muted);line-height:1.6}
 .calib-box-warn{background:rgba(232,135,30,.06);border-color:rgba(232,135,30,.2)}
 .calib-hd{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:5px}
+/* 2026-08-27 (Phase 5) — "cheap variant" match-signal badges; see
+   computeCardSignals()/renderMatchSignals() and their siblings in
+   loadMatchContext()/buildOverviewTab(). Hover/focus shows the `title`
+   attribute's full explanation — kept as compact chips, not another box,
+   so a match with several signals doesn't crowd the tab. */
+.sig-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:13px}
+.sig-badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;padding:5px 9px;border-radius:6px;cursor:default}
+.sig-badge i{font-size:11px}
+.sig-warn{background:rgba(232,135,30,.1);border:1px solid rgba(232,135,30,.28);color:var(--med)}
+.sig-info{background:rgba(0,71,181,.1);border:1px solid rgba(0,71,181,.28);color:var(--cobalt-text)}
+.sig-live{background:rgba(212,21,21,.1);border:1px solid rgba(212,21,21,.28);color:var(--high)}
+/* 2026-08-27 (Phase 5) — Pick of the Week view; see SECTION 15d in banits.js. */
+.potw-hero{position:relative;background:var(--card);border:1px solid rgba(240,179,35,.3);border-radius:var(--r-lg);padding:var(--sp-5) var(--sp-6);margin-bottom:var(--sp-4);box-shadow:var(--shadow-1);cursor:pointer;transition:transform .15s,box-shadow .15s;overflow:hidden}
+.potw-hero::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--gold) 0%,var(--cobalt) 100%)}
+.potw-hero:hover{transform:translateY(-1px);box-shadow:var(--shadow-2)}
+.potw-hero-empty{cursor:default;text-align:center;color:var(--dim);display:flex;flex-direction:column;align-items:center;gap:6px}
+.potw-hero-empty:hover{transform:none;box-shadow:var(--shadow-1)}
+.potw-hero-empty i{font-size:26px;color:var(--card3)}
+.potw-hero-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--gold);font-weight:700;display:flex;align-items:center;gap:5px;margin-bottom:8px}
+.potw-hero-nm{font-family:var(--cond);font-size:26px;font-weight:900;letter-spacing:.01em;line-height:1.1}
+.potw-hero-meta{font-size:11px;color:var(--muted);margin-top:3px}
+.potw-hero-prob{font-family:var(--mono);font-size:28px;font-weight:800;color:var(--high);margin-top:10px;display:flex;align-items:baseline;gap:8px}
+.potw-hero-prob span{font-family:system-ui,-apple-system,sans-serif;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700}
+.potw-sec-hd{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:700;margin-bottom:var(--sp-3);padding-bottom:var(--sp-2);border-bottom:1px solid var(--border)}
+.potw-pool{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;box-shadow:var(--shadow-1)}
+.potw-row{display:flex;align-items:center;gap:10px;padding:9px 14px;font-size:11px;border-bottom:1px solid rgba(0,0,0,.2);cursor:pointer;transition:background .14s}
+.potw-row:last-child{border-bottom:none}
+.potw-row:hover{background:rgba(255,255,255,.04)}
+.potw-row-top{background:rgba(240,179,35,.06)}
+.potw-rank{width:18px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:10px;flex-shrink:0}
+.potw-nm{flex:1;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.potw-team{display:block;font-size:9px;color:var(--dim);font-weight:400}
+.potw-prob{font-family:var(--mono);font-weight:700;color:var(--high);flex-shrink:0}
+.potw-hitrate{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:20px;font-weight:800;margin-bottom:var(--sp-3)}
+.potw-hitrate span{font-family:system-ui,-apple-system,sans-serif;font-size:10px;color:var(--dim);font-weight:600}
+.potw-hist{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;box-shadow:var(--shadow-1)}
+.potw-hist-row{display:flex;align-items:center;gap:10px;padding:8px 14px;font-size:11px;border-bottom:1px solid rgba(0,0,0,.2);cursor:pointer;transition:background .14s}
+.potw-hist-row:last-child{border-bottom:none}
+.potw-hist-row:hover{background:rgba(255,255,255,.04)}
+.potw-hist-wk{width:64px;flex-shrink:0;font-family:var(--mono);font-size:9px;color:var(--dim)}
+.potw-hist-nm{flex:1;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.potw-res{display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:3px 7px;border-radius:5px;flex-shrink:0}
+.potw-hit{background:rgba(0,184,118,.12);color:var(--low)}
+.potw-miss{background:rgba(212,21,21,.1);color:var(--high)}
+.potw-pending{background:rgba(255,255,255,.05);color:var(--dim)}
 /* ─── REF BADGE ──────────────────────────────────────────── */
 .ref-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted)}
 /* ─── CONTEXT SECTION ────────────────────────────────────── */
@@ -572,6 +617,12 @@ a:focus-visible{
 .ctx-sec-hd{font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--cobalt-text);font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:5px}
 .ctx-form-row{display:flex;align-items:center;gap:10px;margin-bottom:5px}
 .ctx-form-nm{font-size:10px;font-weight:700;min-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 2026-08-27 (Phase 5) — long-term absentees list (getSidelined()) */
+.sidelined-list{display:flex;flex-direction:column;gap:6px}
+.sidelined-row{display:flex;align-items:center;gap:8px;font-size:11px}
+.sidelined-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.sidelined-name{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidelined-type{color:var(--dim);font-size:10px;flex-shrink:0}
 /* ─── POSITION BADGE IN TABLE ────────────────────────────── */
 .pos-badge{display:inline-flex;align-items:center;justify-content:center;background:rgba(0,71,181,.15);border:1px solid rgba(0,71,181,.25);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;color:var(--cobalt-text);font-family:var(--mono)}
 /* Kit number pill in analysis cards */
@@ -818,9 +869,17 @@ a:focus-visible{
 .odds-value-tag{font-size:10px;font-weight:700;font-family:var(--mono);margin-top:6px;padding:2px 6px;border-radius:4px;display:inline-block}
 .odds-value-pos{color:var(--low);background:rgba(0,184,118,.14);border:1px solid rgba(0,184,118,.3);box-shadow:0 0 12px -4px rgba(0,184,118,.5)}
 .odds-value-neg{color:var(--dim);background:rgba(255,255,255,.03);border:1px solid var(--border)}
-.goals-grid{display:flex;gap:8px;margin-bottom:13px}
-.goals-card{flex:1;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:11px;text-align:center;box-shadow:var(--shadow-1)}
 .odds-sec-ttl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;margin:13px 0 7px}
+/* 2026-08-27 (follow-up #18): replaces the removed .goals-grid/.goals-card
+   pair — see buildOddsTab's comment for why. Each row is a compact
+   two-team split bar (label / bar / pct pair), reusing the same visual
+   language as .pred-bar above it rather than inventing a new pattern. */
+.cmp-wrap{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:13px;box-shadow:var(--shadow-1)}
+.cmp-row{margin-bottom:9px}
+.cmp-row:last-child{margin-bottom:0}
+.cmp-lbl{font-size:10px;color:var(--muted);margin-bottom:4px}
+.cmp-bar{position:relative;display:flex;height:6px;border-radius:3px;overflow:hidden;gap:2px;background:rgba(255,255,255,.06)}
+.cmp-pcts{display:flex;justify-content:space-between;font-size:10px;font-weight:700;margin-top:3px}
 
 /* ─── WC 2026 HUB ──────────────────────────────────────────── */
 .sb-home-btn{display:none;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);transition:all .14s}

@@ -32,6 +32,8 @@ let _activeId    = null;      // currently open fixture ID
 let _leaguesOpen = false;     // true while the Leagues (standings) tab is open — gates the landing-page background poll
 let _activeClubId  = null;    // currently open club-page team ID — see SECTION 15c
 let _clubSearchOpen = false;  // true while the Club Search tab is open — same gating role as _leaguesOpen
+let _picksOpen = false;       // true while the Picks (Pick of the Week) tab is open — see SECTION 15d
+let _picksLookback = 4;       // weeks of track-record history shown in the Picks view — 'all' or a number, see SECTION 15d
 let _clubReturnTo  = 'search'; // where the club page's Back button goes — 'search' | 'leagues'
 let _matchReturnTo = 'home';   // where the match view's Back button goes — 'home' | 'club'
 let _matchReturnClubId = null; // which club to return to when _matchReturnTo==='club'
@@ -48,6 +50,7 @@ let _lastFx=null,_lastHt=null,_lastAt=null; // cached for re-render on toggle
 let _currentRefFactor = 1;   // multiplier applied to the foul-based half of cardProb()'s λ — see getRefereeFactor()
 let _currentRefMeta = null;  // {factor, sample, avgCards, leagueAvgCards} | null — for UI disclosure
 let _currentInjuries = new Map(); // playerId → {type,reason} for the currently-open fixture — see getInjuries()
+let _currentSidelined = {home:[], away:[]}; // long-term absentees for the two teams in the currently-open fixture — see getSidelined()
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 2 — TEAM COLOURS
@@ -648,6 +651,55 @@ async function getInjuries(fid){
   return map;
 }
 
+// 2026-08-27 (Phase 5): `/sidelined` — longer-term absences (injury layoffs,
+// accumulated-card suspensions, disciplinary bans) at the TEAM level, as
+// opposed to /injuries' per-fixture "is this player available for THIS
+// match" list above. Genuinely unverified: api-football-endpoint-research.md
+// flagged this endpoint's exact response shape as unconfirmed ("confirm
+// exact response shape with one live test call before wiring it in"), and a
+// live spot-check via WebFetch against the deployed Worker was attempted
+// this round too but declined pending an approval that didn't come through
+// in-session — so, same as the Predictions-tab fix earlier today, this is
+// written to fail SAFE rather than assume a shape: every field is read
+// through optional chaining with a fallback path, a response that doesn't
+// parse into anything usable just yields an empty list (never a broken page),
+// and this never feeds cardProb() or any exclusion logic — /injuries still
+// owns "should this player's probability show at all" entirely unchanged.
+// This is purely a supplementary "currently out, longer-term" note.
+//
+// Queried by team (not fixture, since sidelined absences aren't naturally
+// fixture-scoped) so this costs exactly 2 calls per match view — same shape
+// as the existing /players/squads call — rather than one call per player.
+const _sidelinedCache = new Map(); // teamId → [{playerId,playerName,type,start,end}]
+async function getSidelined(teamId){
+  if(!teamId) return [];
+  if(_sidelinedCache.has(teamId)) return _sidelinedCache.get(teamId);
+  let out = [];
+  try{
+    const r = await afFetch(`/sidelined?team=${teamId}`);
+    const rows = r?.response || [];
+    const today = new Date().toISOString().slice(0,10);
+    out = rows.map(entry=>{
+      const player = entry?.player || entry;
+      const pid = player?.id ?? entry?.player_id ?? null;
+      if(pid==null) return null;
+      return{
+        playerId: pid,
+        playerName: player?.name || entry?.player_name || null,
+        type: entry?.type || player?.type || null,
+        start: entry?.start || null,
+        end: entry?.end || null,
+      };
+    }).filter(Boolean)
+      // Only "currently out" entries — no end date, or an end date that
+      // hasn't passed yet. A resolved historical absence (end date in the
+      // past) isn't useful as a "watch out for this player" note.
+      .filter(x => !x.end || x.end >= today);
+  }catch(e){ /* non-fatal — same fail-safe shape as getInjuries() */ }
+  _sidelinedCache.set(teamId, out);
+  return out;
+}
+
 const _standingsCache = new Map(); // `${leagueId}_${season}` → row array | null (in-memory, this session only)
 async function getStandingsTable(leagueId, season){
   if(!leagueId || !season) return null;
@@ -717,6 +769,46 @@ function getLeagueFtFixtures(leagueId, season){
   return promise;
 }
 
+// 2026-08-27 (Phase 5): referee free-text formats seen across competitions
+// and feeds are more varied than the original "S. Attwell" vs "Stuart
+// Attwell, ENG" pair this matcher was built against — cup/lower-league
+// fixtures in particular have turned up "Last, First" ("Attwell, S.") and
+// bare "Last, Country" ("Attwell, England") shapes with no initial at all.
+// The old matcher took the raw string's LAST whitespace token as the
+// surname, which silently broke on both: "Attwell, S." → last token "s" (an
+// initial, not a surname — would never match "S. Attwell"'s "attwell"), and
+// "Attwell, England" → last token "england" (not a surname at all — would
+// wrongly bucket every referee from that country under one "england" key,
+// a real collision risk, not just a missed match). No referee-id endpoint
+// exists (confirmed in api-football-endpoint-research.md), so this free-text
+// field is genuinely the only signal available; the fix is parsing it more
+// carefully, not finding a better field.
+//
+// refSurname() instead: splits on a comma first (so "Last, X" shapes read
+// the surname straight from the part before the comma, never from what
+// follows it), then — comma or not — walks the remaining tokens from the
+// end and skips any that are a bare single-letter initial OR a known
+// country/nationality word, so "S. Attwell", "Attwell, S.", "Attwell S",
+// "Stuart Attwell, ENG", and "Attwell, England" all resolve to the same
+// "attwell" key. A name with nothing usable left (empty, all-initials, or
+// entirely a country word) returns '' and getRefereeFactor() falls back to
+// its safe no-adjustment default, exactly as it already did for a null
+// referee.
+const REF_COUNTRY_WORDS = new Set(['england','eng','scotland','sco','wales','wal','northernireland','ireland','irl','ir','france','fra','spain','esp','italy','ita','germany','ger','netherlands','ned','nl','portugal','por','belgium','bel','usa','us','turkey','tur','greece','gre','austria','aut','switzerland','sui']);
+function refSurname(raw){
+  if(!raw) return '';
+  const s = String(raw).trim();
+  if(!s) return '';
+  const parts = s.split(',').map(p=>p.trim()).filter(Boolean);
+  const namePart = parts.length ? parts[0] : s;
+  const tokens = namePart.toLowerCase().replace(/[.]/g,'').split(/\s+/).filter(Boolean);
+  if(!tokens.length) return '';
+  let i = tokens.length-1, cand = tokens[i];
+  while(i>0 && (cand.length<=1 || REF_COUNTRY_WORDS.has(cand))){ i--; cand = tokens[i]; }
+  if(cand.length<=1 || REF_COUNTRY_WORDS.has(cand)) return '';
+  return cand;
+}
+
 async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId){
   const none = {factor:1, sample:0, avgCards:null, leagueAvgCards:null, refereeName:refereeName||null};
   if(!refereeName || !leagueId || !season) return none;
@@ -727,19 +819,12 @@ async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId)
     const all = await getLeagueFtFixtures(leagueId, season);
     if(!all.length){ _refCache.set(key, none); return none; }
 
-    // Referee names from the API are inconsistently formatted ("S. Attwell"
-    // vs "Stuart Attwell, ENG") — match on the surname token so both forms
-    // of the same official still line up.
-    const norm = s => (s||'').toLowerCase().replace(/[.,]/g,'').trim();
-    const target = norm(refereeName);
-    const targetLast = target.split(' ').pop();
-    if(!targetLast) return none;
+    const targetSurname = refSurname(refereeName);
+    if(!targetSurname){ _refCache.set(key, none); return none; }
 
     const refFixtures = all.filter(f=>{
       if(f.fixture.id===excludeFixtureId) return false;
-      const r = norm(f.fixture.referee);
-      if(!r) return false;
-      return r===target || r.split(' ').pop()===targetLast;
+      return refSurname(f.fixture.referee)===targetSurname;
     }).slice(0, REF_SAMPLE_CAP);
 
     if(refFixtures.length < REF_MIN_SAMPLE){
@@ -816,11 +901,19 @@ function getTeamLast5(teamId){
 // Promise-cached (not just value-cached) so two teams whose last-5 overlap
 // on a shared fixture (they played each other recently) don't both trigger
 // a fetch for the same fixture at once.
-const _fxPlayersCache = new Map(); // fixtureId → Promise<{[teamId]:{[playerId]:{mins,fouls}}} | null>
+// 2026-08-27 (Phase 5): now also captures `cards` (yellow+red booked in this
+// one match) alongside mins/fouls — backs the new recent-form fouls-per-card
+// ratio / hit-rate stats below. localStorage key bumped ('banits_fxp2_', was
+// 'banits_fxp_') so a pre-existing permanently-cached entry from before this
+// change (which has no `cards` field) can't silently read as "0 cards" —
+// this is exactly the kind of stale-shape gap already fixed elsewhere this
+// session (kvPolicyFor's checkBody guards), so it gets the same treatment
+// here rather than repeating it.
+const _fxPlayersCache = new Map(); // fixtureId → Promise<{[teamId]:{[playerId]:{mins,fouls,cards}}} | null>
 function getFixturePlayerBoxes(fid){
   if(_fxPlayersCache.has(fid)) return _fxPlayersCache.get(fid);
   const promise = (async()=>{
-    const lsKey = 'banits_fxp_'+fid;
+    const lsKey = 'banits_fxp2_'+fid;
     const persisted = lsGet(lsKey);
     if(persisted) return persisted;
     let byTeam = null;
@@ -836,7 +929,7 @@ function getFixturePlayerBoxes(fid){
           const st = row?.statistics?.[0];
           const mins = st?.games?.minutes||0;
           if(pid==null || !st || mins<=0) continue; // didn't play — no signal either way
-          m[pid] = { mins, fouls: st.fouls?.committed||0 };
+          m[pid] = { mins, fouls: st.fouls?.committed||0, cards: (st.cards?.yellow||0)+(st.cards?.red||0) };
         }
         byTeam[tId] = m;
       }
@@ -854,14 +947,27 @@ async function aggregateTeamRecentForm(teamId, formData){
   const fids = (formData?.response||[]).slice(-RECENT_FORM_MATCHES).map(f=>f.fixture?.id).filter(Boolean);
   if(!fids.length) return new Map();
   const boxes = await Promise.all(fids.map(getFixturePlayerBoxes));
-  const agg = new Map(); // playerId → {mins,fouls}
+  const agg = new Map(); // playerId → {mins,fouls,cards,matches,cardedMatches}
   for(const byTeam of boxes){
     const teamMap = byTeam?.[teamId];
     if(!teamMap) continue;
     for(const [pidStr, v] of Object.entries(teamMap)){
       const pid = Number(pidStr);
-      const cur = agg.get(pid) || {mins:0, fouls:0};
+      const cur = agg.get(pid) || {mins:0, fouls:0, cards:0, matches:0, cardedMatches:0};
       cur.mins += v.mins; cur.fouls += v.fouls;
+      // 2026-08-27 (Phase 5): `cards` may be undefined on a box read from a
+      // pre-Phase-5 in-memory promise this same session already resolved
+      // before the localStorage key bump above took effect — `||0` keeps
+      // that edge case from becoming a NaN instead of just under-counting
+      // by the same one match a natural cold reload would fix anyway.
+      const vCards = v.cards||0;
+      cur.cards += vCards; cur.matches += 1;
+      // Tracked PER FIXTURE, separately from the raw `cards` total — a
+      // single match where a player picked up both a yellow and a red is
+      // still just ONE match with a card for hit-rate purposes; summing raw
+      // card counts and dividing by matches would overstate the hit rate
+      // whenever a match produced more than one card.
+      if(vCards>0) cur.cardedMatches += 1;
       agg.set(pid, cur);
     }
   }
@@ -899,9 +1005,21 @@ function applyRecentForm(players, recentFormMap){
   if(!recentFormMap || !recentFormMap.size) return players;
   return players.map(p=>{
     if(p.prob===null || p.foulsMissing || p.noData) return p;
-    const factor = recentFormFactor(recentFormMap.get(p.id), p.fp90);
-    if(factor===1) return p;
-    return { ...p, prob: cardProb(p.fp90, p.pos, p.yc, p.apps, factor), recentFormFactor: factor };
+    const recent = recentFormMap.get(p.id);
+    const factor = recentFormFactor(recent, p.fp90);
+    // 2026-08-27 (Phase 5): fouls-per-card ratio / hit-rate framing — purely
+    // informational context (never feeds cardProb()), so it's attached
+    // whenever a usable recent sample exists, independent of whether the
+    // probability-adjusting `factor` above happened to land on exactly 1.
+    // Same RECENT_MIN_MINUTES trust threshold as the factor itself, so a
+    // 1-cameo sample doesn't get framed as a meaningful "hit rate."
+    const recentExtra = (recent && recent.mins>=RECENT_MIN_MINUTES && recent.matches>0)
+      ? { recentCards: recent.cards, recentMatches: recent.matches,
+          recentHitRate: recent.cardedMatches/recent.matches,
+          recentFoulsPerCard: recent.cards>0 ? recent.fouls/recent.cards : null }
+      : {};
+    if(factor===1) return {...p, ...recentExtra};
+    return { ...p, ...recentExtra, prob: cardProb(p.fp90, p.pos, p.yc, p.apps, factor), recentFormFactor: factor };
   });
 }
 
@@ -950,27 +1068,93 @@ async function getLeagueCardBaseline(leagueId, season){
 // toggle re-render) — each call just recomputes and overwrites the same
 // element; if the element isn't in the DOM (tab rebuilt/closed since), the
 // patch is silently skipped rather than throwing.
+// 2026-08-27 (Phase 5): "cheap variant" match-signal badges — small,
+// derived-from-already-fetched-data flags rather than new model features.
+// Computed here (not their own checkpoint) because this function already
+// has everything 3 of the 5 variants need in scope, at the exact point
+// (starters loaded, referee factor resolved) they become computable — see
+// SECTION 4b/4d for the underlying getRefereeFactor()/cardProb() data these
+// read, never recomputed independently. The other two (Upset Alert, Booking
+// Watch live) are computed at their own natural checkpoints — see
+// loadMatchContext() and buildOverviewTab() respectively — since they need
+// data (standings, live event count) this function doesn't have.
+const REF_WATCH_FACTOR_MIN = 1.15;  // referee running >=15% hot vs this league's own baseline
+const BAN_WATCH_YC = 4;             // "one yellow from" — see disclaimer in the rendered copy below
+const UPSET_POINTS_GAP = 12;        // league-table points gap that triggers Upset Alert — see loadMatchContext()
+const BOOKING_WATCH_LIVE_CARDS = 3; // cards-so-far threshold for Booking Watch (live) — see buildOverviewTab()
+const BOOKING_WATCH_LIVE_MAX_MIN = 60; // ...only while still inside this many elapsed minutes
+function computeCardSignals(){
+  const badges = [];
+  if(_currentRefMeta && _currentRefMeta.sample>=REF_MIN_SAMPLE && _currentRefMeta.avgCards!==null && _currentRefFactor>=REF_WATCH_FACTOR_MIN){
+    badges.push({key:'ref', icon:'ti-whistle', cls:'sig-warn',
+      label:'Referee to watch',
+      detail:`${_currentRefMeta.refereeName} has averaged ${_currentRefMeta.avgCards.toFixed(1)} cards/match this season vs a ${_currentRefMeta.leagueAvgCards.toFixed(1)} league baseline (${_currentRefMeta.sample} matches sampled).`});
+  }
+  const onTheBrink = [..._saHomePlayers, ..._saAwayPlayers]
+    .filter(p=>p.xistatus==='starter' && !p.noData && !_currentInjuries?.has(p.id) && p.yc===BAN_WATCH_YC);
+  if(onTheBrink.length){
+    badges.push({key:'ban', icon:'ti-alert-octagon', cls:'sig-warn',
+      label:'One from a ban',
+      detail:`${onTheBrink.map(p=>p.name).join(', ')} — on ${BAN_WATCH_YC} yellow cards this season. Suspension thresholds vary by competition; shown as a general signal, not a guaranteed trigger.`});
+  }
+  return badges;
+}
+
 async function updateCalibrationCheck(fx){
   const el = document.getElementById('calib-check');
   if(!el) return;
+  // Pick of the Week (2026-08-27, Phase 5) — piggybacks on this exact
+  // checkpoint (called from all 7 branches of loadSeasonAnalysis() the
+  // instant starters are loaded) to offer this match's best-ranked starter
+  // to the current week's candidate pool. See SECTION 15d for why.
+  updatePickOfWeekPool(fx);
   const hExp = calcExpectedCards(_saHomePlayers);
   const aExp = calcExpectedCards(_saAwayPlayers);
-  if(hExp===null && aExp===null) return;
+
+  // Signals that don't need the league baseline render immediately —
+  // Powder Keg (below) is the only one gated on the async baseline fetch.
+  const sigEl = document.getElementById('match-signals');
+  const cardBadges = computeCardSignals();
+
+  if(hExp===null && aExp===null){ renderMatchSignals(sigEl, cardBadges); return; }
   const modelTotal = (hExp||0)+(aExp||0);
 
   const baseline = await getLeagueCardBaseline(fx.league?.id, fx.league?.season);
   const el2 = document.getElementById('calib-check'); // re-fetch: tab may have re-rendered while awaiting
-  if(!el2) return;
+  const sigEl2 = document.getElementById('match-signals');
+  if(!el2){ /* tab gone, nothing to patch */ }
   if(!baseline || baseline.sample < 3){
-    el2.innerHTML = ''; // not enough league data to say anything useful — stay silent rather than show a hollow box
+    if(el2) el2.innerHTML = ''; // not enough league data to say anything useful — stay silent rather than show a hollow box
+    renderMatchSignals(sigEl2, cardBadges);
     return;
   }
   const diffPct = Math.round((modelTotal - baseline.avgCards)/baseline.avgCards*100);
   const withinRange = Math.abs(diffPct) <= 25;
-  el2.innerHTML = `<div class="calib-box${withinRange?'':' calib-box-warn'}">
+  if(el2) el2.innerHTML = `<div class="calib-box${withinRange?'':' calib-box-warn'}">
     <div class="calib-hd"><i aria-hidden="true" class="ti ti-chart-dots" style="font-size:10px"></i> Model self-check <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— not a predictive-accuracy backtest, see note</span></div>
     <div class="calib-row">This match's model total (<b>${modelTotal.toFixed(1)}</b>) vs this league's actual average of <b>${baseline.avgCards.toFixed(1)}</b> cards/match (last ${baseline.sample} finished matches) — ${diffPct>=0?'+':''}${diffPct}% ${withinRange?'· within a plausible range':'· notably outside the recent league range, worth a sanity check'}.</div>
   </div>`;
+
+  // Powder Keg — the model's own combined total is notably ABOVE this
+  // league's real recent average (not just "outside range" either way —
+  // a notably QUIET match isn't a powder keg, so this only fires on the
+  // high side of the exact same diffPct/threshold the self-check above
+  // already computed, not a separate number to keep in sync).
+  if(diffPct >= 25){
+    cardBadges.push({key:'keg', icon:'ti-bomb', cls:'sig-warn',
+      label:'Powder keg',
+      detail:`Model expects ${modelTotal.toFixed(1)} cards combined — ${diffPct}% above this league's own recent average of ${baseline.avgCards.toFixed(1)}/match.`});
+  }
+  renderMatchSignals(sigEl2, cardBadges);
+}
+
+function renderMatchSignals(el, badges){
+  if(!el) return;
+  if(!badges.length){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="sig-row">${badges.map(b=>`
+    <div class="sig-badge ${b.cls}" title="${b.detail.replace(/"/g,'&quot;')}">
+      <i aria-hidden="true" class="ti ${b.icon}"></i> ${b.label}
+    </div>`).join('')}</div>`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1139,14 +1323,16 @@ async function openMatch(fid){
   _leaguesOpen=false;
   _activeClubId=null;
   _clubSearchOpen=false;
+  _picksOpen=false;
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
   const clubEl=document.getElementById('club'); if(clubEl)clubEl.style.display='none';
   const csEl=document.getElementById('clubsearch'); if(csEl)csEl.style.display='none';
+  const pkEl=document.getElementById('picks'); if(pkEl)pkEl.style.display='none';
   syncBottomNav(null); // a match view is a drill-in, not one of the bar's own top-level destinations
   // Reset to neutral immediately so a previous match's referee adjustment
   // (or injury list) can never leak into this one while its own lookup is
   // still in flight.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
   // Keep the URL shareable — replaceState so opening matches doesn't spam
   // browser back/forward history, just reflects "this is what's open now".
   try{ history.replaceState(null, '', matchLinkFor(fid)); }catch(e){}
@@ -1399,23 +1585,49 @@ async function loadMatchContext(fx,ht,at){
   // every single match view with a genuine upstream error ("The h2h field do
   // not exist") — the h2h panel has silently never had data. Unrelated to
   // rate limiting; just a wrong endpoint.
-  let hForm,aForm,standingsTable,h2hData;
+  let hForm,aForm,standingsTable,h2hData,hSidelined,aSidelined;
   const cached = fid && _matchContextCache.get(fid);
   if(cached && (Date.now()-cached.ts) < MATCH_CONTEXT_TTL){
-    ({hForm,aForm,standingsTable,h2hData}=cached);
+    ({hForm,aForm,standingsTable,h2hData,hSidelined,aSidelined}=cached);
   } else {
-    [hForm,aForm,standingsTable,h2hData]=await Promise.all([
+    [hForm,aForm,standingsTable,h2hData,hSidelined,aSidelined]=await Promise.all([
       getTeamLast5(hId),
       getTeamLast5(aId),
       isIntl?null:getStandingsTable(lgId, lgSeason),
       afFetch(`/fixtures/headtohead?h2h=${hId}-${aId}&last=5&status=FT`),
+      getSidelined(hId),
+      getSidelined(aId),
     ]);
-    if(fid) _matchContextCache.set(fid, {hForm,aForm,standingsTable,h2hData,ts:Date.now()});
+    if(fid) _matchContextCache.set(fid, {hForm,aForm,standingsTable,h2hData,hSidelined,aSidelined,ts:Date.now()});
   }
   // 2026-08-27 (follow-up #16): same stale-match guard as loadSeasonAnalysis/
   // loadOddsTab — the user may have opened a different match while the
   // Promise.all above was in flight.
   if(fid && _activeId!==fid) return;
+
+  // ── Long-term absentees (Phase 5) ───────────────────────────────
+  _currentSidelined = {home:hSidelined||[], away:aSidelined||[]};
+  const sdEl=document.getElementById('ctx-sidelined');
+  if(sdEl){
+    const rows=[
+      ...(_currentSidelined.home||[]).map(x=>({...x,col:ht.c,team:fx.teams.home.name})),
+      ...(_currentSidelined.away||[]).map(x=>({...x,col:at.c,team:fx.teams.away.name})),
+    ];
+    if(rows.length){
+      sdEl.innerHTML=`<div class="ctx-panel" style="margin-top:12px">
+        <div class="ctx-sec-hd"><i aria-hidden="true" class="ti ti-shield-off" style="font-size:11px"></i> Long-term absentees</div>
+        <div class="sidelined-list">${rows.map(x=>`
+          <div class="sidelined-row">
+            <span class="sidelined-dot" style="background:${x.col}"></span>
+            <span class="sidelined-name">${x.playerName||'Unknown player'}</span>
+            <span class="sidelined-type">${x.type||'Unavailable'}</span>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    } else {
+      sdEl.innerHTML='';
+    }
+  }
 
   // ── Form strips ──────────────────────────────────────────────
   function processForm(data,teamId){
@@ -1474,6 +1686,29 @@ async function loadMatchContext(fx,ht,at){
 
     const stEl=document.getElementById('ctx-standings');
     if(stEl) stEl.innerHTML=tbl;
+
+    // ── Upset Alert (Phase 5 "cheap variant") ────────────────────
+    // Table-position/points gap only — this app has no true win-probability
+    // model of its own (the Predictions tab's percentages come straight
+    // from API-Football, not from anything computed here), so rather than
+    // dress this up as a probability, it's framed honestly as what it
+    // actually is: a league-table gap worth knowing about, not a forecast.
+    const uaEl=document.getElementById('upset-alert');
+    if(uaEl){
+      if(hIdx>=0 && aIdx>=0){
+        const hRow=table[hIdx], aRow=table[aIdx];
+        const gap=Math.abs(hRow.points-aRow.points);
+        if(gap>=UPSET_POINTS_GAP){
+          const underdog = hRow.points<aRow.points ? {row:hRow,name:fx.teams.home.name,col:ht.c} : {row:aRow,name:fx.teams.away.name,col:at.c};
+          const favourite = hRow.points<aRow.points ? {row:aRow,name:fx.teams.away.name} : {row:hRow,name:fx.teams.home.name};
+          uaEl.innerHTML=`<div class="sig-row" style="margin-top:12px">
+            <div class="sig-badge sig-info" title="${underdog.name} (${underdog.row.points}pts, ${ordinal(underdog.row.rank)}) sit ${gap} points behind ${favourite.name} (${favourite.row.points}pts, ${ordinal(favourite.row.rank)}) in the table. Table gap only — not a win-probability forecast.">
+              <i aria-hidden="true" class="ti ti-arrow-big-up-lines" style="color:${underdog.col}"></i> Upset alert
+            </div>
+          </div>`;
+        } else uaEl.innerHTML='';
+      } else uaEl.innerHTML='';
+    }
   } else if(!isIntl){
     const stEl=document.getElementById('ctx-standings');
     if(stEl) stEl.innerHTML=`<div class="no-data" style="padding:14px"><i aria-hidden="true" class="ti ti-table-off"></i><strong>Standings available after season start</strong></div>`;
@@ -2397,7 +2632,27 @@ function buildOverviewTab(fx,ht,at){
       <div class="ctx-sec-hd"><i aria-hidden="true" class="ti ti-table" style="font-size:11px"></i> League table</div>
       <div id="ctx-standings"><div class="skel skel-line" style="width:100%;height:36px;margin-bottom:0"></div></div>
     </div>
-    <div id="ctx-h2h"></div>`;
+    <div id="ctx-h2h"></div>
+    <div id="upset-alert"></div>
+    <div id="ctx-sidelined"></div>`;
+  }
+
+  // ── Booking Watch (Phase 5 "cheap variant", live only) ──────────
+  // Purely synchronous — fx.events and fx.fixture.status are already part
+  // of the fixture-detail payload this tab is built from, no extra fetch.
+  // Only meaningful while the match is still live and inside its first
+  // hour: a high card count by full time in a match that's long since
+  // finished isn't a "watch this" signal, it's just the final total.
+  if(isLive(fx.fixture?.status?.short)){
+    const elapsed = fx.fixture?.status?.elapsed;
+    const cardsSoFar = events.filter(e=>e.type==='Card').length;
+    if(cardsSoFar>=BOOKING_WATCH_LIVE_CARDS && elapsed!=null && elapsed<=BOOKING_WATCH_LIVE_MAX_MIN){
+      h+=`<div class="sig-row">
+        <div class="sig-badge sig-live" title="${cardsSoFar} cards shown inside the first ${elapsed} minutes — an elevated pace for this stage of a match.">
+          <i aria-hidden="true" class="ti ti-flame"></i> Booking watch — ${cardsSoFar} cards, ${elapsed}'
+        </div>
+      </div>`;
+    }
   }
 
   h+='<div class="two-col">';
@@ -3313,6 +3568,7 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
       <div class="csb-lbl">expected yellows</div>
     </div>
   </div>
+  <div id="match-signals"></div>
   <div id="calib-check"></div>`:'';
 
   // ── Top threat per team ──────────────────────────────────────
@@ -3420,6 +3676,8 @@ function buildSaCard(p,isIntl,src){
     <div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Fouls committed</span><b>${p.totalFouls||0} total · ${p.fp90.toFixed(2)}/90</b></div>
     <div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Tackles</span><b>${p.totalTackles||0} total · ${p.tp90.toFixed(2)}/90</b></div>
     <div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Yellow cards</span><b>${p.yc} in ${p.apps} apps (${(p.yc/Math.max(p.apps,1)*100).toFixed(0)}%)</b></div>
+    ${p.yc>0?`<div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Fouls per card</span><b>${(p.totalFouls/p.yc).toFixed(1)} — averages this many fouls before a booking</b></div>`:''}
+    ${p.recentMatches?`<div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Recent form</span><b>Carded in ${Math.round(p.recentMatches*p.recentHitRate)} of last ${p.recentMatches} matches (${(p.recentHitRate*100).toFixed(0)}%)${p.recentFoulsPerCard?` · ${p.recentFoulsPerCard.toFixed(1)} fouls/card recently`:''}</b></div>`:''}
     ${p.foulsMissing?'':
     `<div class="sa-ex-formula">
       <div>FC/90 <span class="val">${p.fp90.toFixed(2)}</span> × pos.factor <span class="val">${posFactor}</span> (${p.posL}) × 0.12${refApplied?` × ref.factor <span class="val">${refFactor.toFixed(2)}</span>`:''}${recentApplied?` × recent.factor <span class="val">${recentFactor.toFixed(2)}</span>`:''} = λ<sub>foul</sub> <span class="val">${foulLambda}</span></div>
@@ -3505,17 +3763,49 @@ function buildOddsTab(predData,oddsData,fx,ht,at){
       </div>
     </div>`;
 
-    if(pred.goals?.home!==undefined){
-      h+=`<div class="goals-grid">
-        <div class="goals-card">
-          <div style="font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:4px">Home goals</div>
-          <div style="font-size:24px;font-weight:700;font-family:var(--mono);color:${ht.c}">${pred.goals.home??'-'}</div>
-        </div>
-        <div class="goals-card">
-          <div style="font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin-bottom:4px">Away goals</div>
-          <div style="font-size:24px;font-weight:700;font-family:var(--mono);color:${at.c}">${pred.goals.away??'-'}</div>
-        </div>
-      </div>`;
+    // 2026-08-27 (follow-up #18): the old "Home goals" / "Away goals" cards
+    // rendered `pred.goals.home`/`.away` raw and labelled as if they were a
+    // predicted score. They aren't — API-Football's own docs are a JS SPA
+    // that resists scraping and no independently-hosted schema mirror could
+    // confirm the field's exact semantics (flagged as unverified in
+    // api-football-endpoint-research.md), but the values reproduced live —
+    // a signed decimal like "-3.5" for "Away goals" — match the same
+    // signed goal-line convention API-Football uses for its documented
+    // `under_over` field, not a goal count. Labelling an unconfirmed
+    // goal-line as "Away goals: -3.5" is actively misleading (this is
+    // exactly what was screenshotted as "tells us absolutely nothing"), so
+    // rather than guess at a relabel, this drops the field and replaces it
+    // with `pred.comparison` — a different, well-established part of the
+    // same already-fetched /predictions response (form/attack/defense/
+    // poisson/h2h/goals/total split between the two teams) that the app
+    // was fetching but never parsing. No new API call. Every row is parsed
+    // defensively and only rendered if both sides come back as real
+    // numbers, so an unexpected shape just means that row (or the whole
+    // section) quietly doesn't render — never a repeat of this bug.
+    if(pred.comparison){
+      const CMP_ROWS=[
+        ['form','Recent form'],['att','Attack strength'],['def','Defensive strength'],
+        ['poisson_distribution','Expected-goals model'],['h2h','Head-to-head record'],
+        ['goals','Goal threat'],['total','Overall edge'],
+      ];
+      const rows=CMP_ROWS.map(([key,label])=>{
+        const c=pred.comparison[key];
+        if(!c)return'';
+        const hv=parseFloat(c.home),av=parseFloat(c.away);
+        if(!Number.isFinite(hv)||!Number.isFinite(av))return'';
+        const tot=(hv+av)||1, hw=hv/tot*100, aw=av/tot*100;
+        return`<div class="cmp-row">
+          <div class="cmp-lbl">${label}</div>
+          <div class="cmp-bar"><div style="width:${hw}%;background:${ht.c}"></div><div style="width:${aw}%;background:${at.c}"></div></div>
+          <div class="cmp-pcts"><span style="color:${ht.c}">${Math.round(hv)}%</span><span style="color:${at.c}">${Math.round(av)}%</span></div>
+        </div>`;
+      }).join('');
+      if(rows){
+        h+=`<div class="cmp-wrap">
+          <div class="stitle" style="font-size:11px;margin:16px 0 9px"><i aria-hidden="true" class="ti ti-chart-bar"></i>Team comparison</div>
+          ${rows}
+        </div>`;
+      }
     }
   }
 
@@ -3602,6 +3892,12 @@ function changeDay(delta){
     document.getElementById('landing').style.display='flex';
     const clubEl=document.getElementById('club'); if(clubEl)clubEl.style.display='none';
     const csEl=document.getElementById('clubsearch'); if(csEl)csEl.style.display='none';
+  }
+  if(_picksOpen){
+    // Same reasoning — Picks spans the whole week, not one calendar day.
+    _picksOpen=false;
+    document.getElementById('landing').style.display='flex';
+    const pkEl=document.getElementById('picks'); if(pkEl)pkEl.style.display='none';
   }
   syncBottomNav('home'); // changeDay() always lands back on the fixture list
   loadFixtures();
@@ -3710,6 +4006,7 @@ function goHome(){
   _leaguesOpen=false;
   _activeClubId=null;
   _clubSearchOpen=false;
+  _picksOpen=false;
   // 2026-08-27 (follow-up #16): see the identical reset in openMatch() — a
   // referee factor or injury list belongs to whichever match set it, never
   // to whatever's opened next. Without this, cardProb() calls made from a
@@ -3717,13 +4014,14 @@ function goHome(){
   // in-between screen (like this one) could still be read by, e.g., a
   // dev-tools console call or a future feature that computes probabilities
   // outside of a match context while landing/home is showing.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
   if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}
   document.getElementById('landing').style.display='flex';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
   const clubEl=document.getElementById('club'); if(clubEl)clubEl.style.display='none';
   const csEl=document.getElementById('clubsearch'); if(csEl)csEl.style.display='none';
+  const pkEl=document.getElementById('picks'); if(pkEl)pkEl.style.display='none';
   document.querySelectorAll('.fix-row').forEach(el=>el.classList.remove('on'));
   // Drop the ?fixture= param so the URL matches what's actually showing.
   try{
@@ -4059,17 +4357,19 @@ function openLeagues(){
   _leaguesOpen=true;
   _activeClubId=null;
   _clubSearchOpen=false;
+  _picksOpen=false;
   // 2026-08-27 (follow-up #16): see the matching reset in openClub() below —
   // this view doesn't currently call cardProb() itself, but resetting here
   // too (not just at the one confirmed call site) means a previous match's
   // referee factor can never leak into ANY screen reached from here.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   document.getElementById('lg').style.display='flex';
   document.getElementById('lg').style.flexDirection='column';
   const clubEl=document.getElementById('club'); if(clubEl)clubEl.style.display='none';
   const csEl=document.getElementById('clubsearch'); if(csEl)csEl.style.display='none';
+  const pkEl=document.getElementById('picks'); if(pkEl)pkEl.style.display='none';
   document.querySelectorAll('.fix-row').forEach(el=>el.classList.remove('on'));
   try{ const url=new URL(location.href); url.searchParams.delete('fixture'); history.replaceState(null,'',url.toString()); }catch(e){}
   renderLeaguesNav();
@@ -4223,13 +4523,14 @@ function getTeamSquad(teamId){
 
 function openClubSearch(){
   if(_activeId){_activeId=null;if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}}
-  _leaguesOpen=false; _activeClubId=null; _clubSearchOpen=true;
+  _leaguesOpen=false; _activeClubId=null; _clubSearchOpen=true; _picksOpen=false;
   // 2026-08-27 (follow-up #16): see the matching reset in openClub() below.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
   const clubEl=document.getElementById('club'); if(clubEl)clubEl.style.display='none';
+  const pkEl=document.getElementById('picks'); if(pkEl)pkEl.style.display='none';
   document.getElementById('clubsearch').style.display='flex';
   document.getElementById('clubsearch').style.flexDirection='column';
   document.querySelectorAll('.fix-row').forEach(el=>el.classList.remove('on'));
@@ -4365,7 +4666,7 @@ async function openClub(teamId){
   if(_leaguesOpen) _clubReturnTo='leagues';
   else if(!_activeClubId) _clubReturnTo='search';
   if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}
-  _activeId=null; _leaguesOpen=false; _clubSearchOpen=false; _activeClubId=teamId;
+  _activeId=null; _leaguesOpen=false; _clubSearchOpen=false; _picksOpen=false; _activeClubId=teamId;
   // 2026-08-27 (follow-up #16, bug fix): loadClubPage() below fetches squad
   // stats through the same cardProb()-calling pipeline as a match view
   // (fetchPlayersThrottled → extractDomesticStats → cardProb), and cardProb()
@@ -4374,11 +4675,12 @@ async function openClub(teamId){
   // club page (no other match opened in between) silently applied that
   // stale referee's factor to every player on this unrelated squad — exactly
   // what buildClubSquadCard()'s own comment already claimed couldn't happen.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
   const csEl=document.getElementById('clubsearch'); if(csEl)csEl.style.display='none';
+  const pkEl=document.getElementById('picks'); if(pkEl)pkEl.style.display='none';
   document.getElementById('club').style.display='flex';
   document.getElementById('club').style.flexDirection='column';
   document.querySelectorAll('.fix-row').forEach(el=>el.classList.remove('on'));
@@ -4560,8 +4862,343 @@ document.addEventListener('DOMContentLoaded',()=>{
   });
 });
 
+// ═══════════════════════════════════════════════════════════════
+// SECTION 15d — PICK OF THE WEEK
+// ═══════════════════════════════════════════════════════════════
+// Architecture note (2026-08-27): there's no backend database here, only
+// localStorage, and pulling fresh predictions for every fixture across a
+// week to find a genuine "best pick" would mean 500+ paced API calls —
+// structurally infeasible against this app's rate-limited fetch queue (see
+// _afConcurrent/_afMinGapMs). So the candidate pool accumulates
+// PROGRESSIVELY instead: every time a match's season analysis finishes
+// loading, updateCalibrationCheck() (called from all 7 branches of
+// loadSeasonAnalysis() the instant starters are ready — see its own
+// comment) offers that match's single best-ranked starter to the current
+// ISO week's pool. Browse a handful of matches over the week and the pool
+// converges toward a real "best pick" without ever needing a bulk fetch.
+//
+// Ranking uses a confidence-adjusted shrinkage score, not the raw
+// probability cardProb() already shows — a player with a hot 3-appearance
+// sample shouldn't outrank a well-established 30%-a-game regular just
+// because a thin sample happened to spike. This score is ONLY used to
+// order candidates against each other; the % shown to the user everywhere,
+// including here, is always the real, unmodified cardProb() output.
+const POTW_PRIOR_STRENGTH = 12;  // "apps worth" of regression toward the mean — see pickScore()
+const POTW_MIN_APPS = 3;         // below this, a player never enters the pool — too little signal to rank meaningfully
+const POTW_POOL_CAP = 25;        // top-N kept per week; anything past this was never the best candidate seen that week
+const POTW_HISTORY_CAP = 52;     // ~1 season of weekly picks kept in the permanent track-record log
+
+function pickScore(p){
+  return p.prob * (p.apps / (p.apps + POTW_PRIOR_STRENGTH));
+}
+
+// ISO-8601 week key, e.g. "2026-W35" (Thursday-anchored per the ISO
+// definition, so any day Mon–Sun within one match week resolves to the same
+// key regardless of which day a given fixture falls on).
+function isoWeekKey(d){
+  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = dt.getUTCDay() || 7; // Sun(0) -> 7
+  dt.setUTCDate(dt.getUTCDate() + 4 - day); // Thursday of this ISO week
+  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+  return `${dt.getUTCFullYear()}-W${String(weekNo).padStart(2,'0')}`;
+}
+
+// ── Persistence (plain localStorage, no TTL — this is app-generated state,
+// not a fetch cache, so it's never "stale" the way an API response is; it's
+// pruned by the week/history caps above instead). Every read/write is
+// wrapped — persistence here is a bonus, never load-bearing, same as
+// lsGet/lsSet elsewhere in the app. ────────────────────────────────────
+function potwPoolKey(weekKey){ return 'banits_potw_pool_'+weekKey; }
+function getPotwPool(weekKey){
+  try{
+    const raw = localStorage.getItem(potwPoolKey(weekKey));
+    const pool = raw ? JSON.parse(raw) : [];
+    return Array.isArray(pool) ? pool : [];
+  }catch(e){ return []; }
+}
+function setPotwPool(weekKey, pool){
+  try{ localStorage.setItem(potwPoolKey(weekKey), JSON.stringify(pool)); }
+  catch(e){ /* quota exceeded or storage disabled — non-fatal, see note above */ }
+}
+function getPotwHistory(){
+  try{
+    const raw = localStorage.getItem('banits_potw_history');
+    const hist = raw ? JSON.parse(raw) : [];
+    return Array.isArray(hist) ? hist : [];
+  }catch(e){ return []; }
+}
+function setPotwHistory(hist){
+  try{ localStorage.setItem('banits_potw_history', JSON.stringify(hist.slice(-POTW_HISTORY_CAP))); }
+  catch(e){}
+}
+
+// Offers the best-ranked confirmed starter from a just-loaded match to the
+// current week's pool. Safe to call repeatedly for the same fixture (a
+// lineup-confirmation re-render, or the user simply reopening the match) —
+// dedupes by fixture id, replacing the previous entry rather than piling up
+// duplicates of the same match.
+function updatePickOfWeekPool(fx){
+  try{
+    if(!fx?.fixture?.id || !fx?.fixture?.date) return;
+    const candidates = [..._saHomePlayers, ..._saAwayPlayers]
+      .filter(p=>p.xistatus==='starter' && !p.noData && !p.foulsMissing && p.prob!=null && p.apps>=POTW_MIN_APPS);
+    if(!candidates.length) return;
+
+    const best = candidates.reduce((a,b)=>pickScore(b)>pickScore(a)?b:a);
+    const isHome = _saHomePlayers.some(p=>p.id===best.id);
+    const team = isHome ? fx.teams?.home : fx.teams?.away;
+    const opponent = isHome ? fx.teams?.away : fx.teams?.home;
+    const weekKey = isoWeekKey(new Date(fx.fixture.date));
+
+    const entry = {
+      fid: fx.fixture.id,
+      playerId: best.id,
+      name: best.name,
+      pos: best.posL || best.pos || '',
+      teamId: team?.id ?? null,
+      team: team?.name || '',
+      opponentId: opponent?.id ?? null,
+      opponent: opponent?.name || '',
+      matchDate: fx.fixture.date,
+      prob: best.prob,
+      apps: best.apps,
+      score: pickScore(best),
+      addedAt: Date.now(),
+    };
+
+    let pool = getPotwPool(weekKey).filter(e=>e.fid!==entry.fid); // dedupe re-visits of the same match
+    pool.push(entry);
+    pool.sort((a,b)=>b.score-a.score);
+    if(pool.length>POTW_POOL_CAP) pool = pool.slice(0,POTW_POOL_CAP);
+    setPotwPool(weekKey, pool);
+  }catch(e){
+    console.warn('[Banits] Pick of the Week pool update failed (non-fatal):', e.message);
+  }
+}
+
+// Notification-trigger extension point (documented, not implemented) — a
+// real push notification needs a backend (service worker + push
+// subscription server), which this app has none of. The natural hook for
+// wiring one in later is right here: called once per newly-crowned weekly
+// pick, the moment it's promoted from a week's pool into the permanent
+// history log below. Currently a documented no-op.
+function notifyNewPick(entry){
+  // Intentionally empty — see comment above.
+}
+
+// Promotes each past (non-current) week's top pool entry into the
+// permanent history log, exactly once per week — tracked via a small
+// "already promoted" set so re-opening the Picks view doesn't re-promote
+// (and re-notify) the same week repeatedly. The CURRENT week is never
+// promoted here; it's still accumulating and is shown live from its pool
+// instead (see buildPicksHtml()).
+function promotePastWeeks(currentWeekKey){
+  try{
+    let promoted;
+    try{ promoted = new Set(JSON.parse(localStorage.getItem('banits_potw_promoted')||'[]')); }
+    catch(e){ promoted = new Set(); }
+
+    const history = getPotwHistory();
+    let changed = false;
+    for(let i=0;i<localStorage.length;i++){
+      const key = localStorage.key(i);
+      if(!key || !key.startsWith('banits_potw_pool_')) continue;
+      const weekKey = key.slice('banits_potw_pool_'.length);
+      if(weekKey===currentWeekKey || promoted.has(weekKey)) continue;
+      const pool = getPotwPool(weekKey);
+      if(pool.length){
+        const top = { ...pool[0], weekKey, result:'pending', resolvedAt:null };
+        history.push(top);
+        notifyNewPick(top);
+        changed = true;
+      }
+      promoted.add(weekKey);
+    }
+    try{ localStorage.setItem('banits_potw_promoted', JSON.stringify([...promoted])); }catch(e){}
+    if(changed) setPotwHistory(history);
+    return changed;
+  }catch(e){
+    console.warn('[Banits] Pick of the Week week-promotion failed (non-fatal):', e.message);
+    return false;
+  }
+}
+
+// Loose player-name matcher for resolving a pick against a fixture's event
+// list — API-Football events carry only a free-text player name (no id),
+// which won't always exactly match the name format the player-stats
+// endpoint returned when the pick was made (e.g. "B. Brink" vs "Ben
+// Brink"). Falls back to a last-name comparison rather than requiring an
+// exact match; when even that's ambiguous, resolvePendingPicks() leaves the
+// pick pending rather than guessing.
+function normPlayerName(s){
+  return (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z\s]/g,'').trim();
+}
+function namesLikelyMatch(a,b){
+  const na=normPlayerName(a), nb=normPlayerName(b);
+  if(!na||!nb) return false;
+  if(na===nb) return true;
+  const at=na.split(/\s+/).filter(Boolean), bt=nb.split(/\s+/).filter(Boolean);
+  if(!at.length||!bt.length) return false;
+  const alast=at[at.length-1], blast=bt[bt.length-1];
+  return alast.length>=3 && alast===blast;
+}
+
+// Resolves any 'pending' history entries whose matches have finished, by
+// fetching that one fixture and checking its event list for a card against
+// the picked player on the picked team. Best-effort and deliberately
+// conservative: a fixture that can't be fetched, hasn't kicked off, or
+// hasn't reached a final status is simply left pending and retried next
+// time the Picks view opens — never guessed at.
+async function resolvePendingPicks(history){
+  let changed = false;
+  const now = Date.now();
+  for(const entry of history){
+    if(entry.result!=='pending') continue;
+    if(!entry.matchDate || new Date(entry.matchDate).getTime() > now) continue; // hasn't kicked off yet
+    try{
+      const data = await afFetch(`/fixtures?id=${entry.fid}`);
+      const fxd = data?.response?.[0];
+      if(!fxd) continue; // network hiccup or not found yet — try again next time
+      const status = fxd.fixture?.status?.short;
+      if(!isFinal(status)) continue; // still live/scheduled/postponed-unknown
+      const events = fxd.events||[];
+      const carded = events.some(e=>e.type==='Card' && e.team?.id===entry.teamId && namesLikelyMatch(e.player?.name, entry.name));
+      entry.result = carded ? 'hit' : 'miss';
+      entry.resolvedAt = Date.now();
+      changed = true;
+    }catch(e){
+      console.warn('[Banits] Pick of the Week resolution failed for fixture', entry.fid, '(non-fatal):', e.message);
+    }
+  }
+  return changed;
+}
+
+function filterHistoryByLookback(history, weeks){
+  if(weeks==='all') return history;
+  const cutoff = Date.now() - Number(weeks)*7*86400000;
+  return history.filter(h=>h.matchDate && new Date(h.matchDate).getTime() >= cutoff);
+}
+
+const POTW_LOOKBACK_OPTIONS = [
+  {v:4,  label:'Last 4 weeks'},
+  {v:8,  label:'Last 8 weeks'},
+  {v:12, label:'Last 12 weeks'},
+  {v:'all', label:'All time'},
+];
+
+function setPicksLookback(v){
+  _picksLookback = v==='all' ? 'all' : Number(v);
+  renderPicksView();
+}
+
+function openPicks(){
+  if(_activeId){_activeId=null;if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}}
+  _leaguesOpen=false; _activeClubId=null; _clubSearchOpen=false; _picksOpen=true;
+  // 2026-08-27 (follow-up #16): see the matching reset in openLeagues()/
+  // openClubSearch() — this view doesn't call cardProb() itself either, but
+  // resetting here too means a previous match's referee factor/injury list
+  // can never leak into any screen reached from here.
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  document.getElementById('landing').style.display='none';
+  document.getElementById('mv').style.display='none';
+  const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
+  const clubEl=document.getElementById('club'); if(clubEl)clubEl.style.display='none';
+  const csEl=document.getElementById('clubsearch'); if(csEl)csEl.style.display='none';
+  const pkEl=document.getElementById('picks');
+  if(pkEl){ pkEl.style.display='flex'; pkEl.style.flexDirection='column'; }
+  document.querySelectorAll('.fix-row').forEach(el=>el.classList.remove('on'));
+  try{ const url=new URL(location.href); url.searchParams.delete('fixture'); history.replaceState(null,'',url.toString()); }catch(e){}
+  // No bottom-nav slot for Picks (Phase 4 deliberately kept the mobile
+  // bottom nav to the two highest-traffic views) — clears whichever was
+  // previously active rather than pointing at a nonexistent one.
+  syncBottomNav(null);
+  focusView('picks');
+  renderPicksView();
+}
+
+async function renderPicksView(){
+  const body = document.getElementById('picks-body');
+  if(!body) return;
+  body.innerHTML = '<div class="ld-msg"><div class="spnr"></div>Loading picks…</div>';
+
+  const weekKey = isoWeekKey(new Date());
+  const pool = getPotwPool(weekKey);
+  let history = getPotwHistory();
+
+  try{
+    const promotedChanged = promotePastWeeks(weekKey);
+    if(promotedChanged) history = getPotwHistory();
+    const resolvedChanged = await resolvePendingPicks(history);
+    if(resolvedChanged) setPotwHistory(history);
+  }catch(e){
+    console.warn('[Banits] Pick of the Week view refresh failed (non-fatal):', e.message);
+  }
+
+  if(!_picksOpen) return; // user navigated away while this was awaiting network calls
+  const freshBody = document.getElementById('picks-body');
+  if(freshBody) freshBody.innerHTML = buildPicksHtml(weekKey, getPotwPool(weekKey), getPotwHistory());
+}
+
+function buildPicksHtml(weekKey, pool, history){
+  const top = pool[0] || null;
+  const heroHtml = top ? `
+    <div class="potw-hero" onclick="openMatch(${top.fid})" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <div class="potw-hero-lbl"><i aria-hidden="true" class="ti ti-star-filled"></i> This week's pick</div>
+      <div class="potw-hero-nm">${top.name}</div>
+      <div class="potw-hero-meta">${top.pos?top.pos+' · ':''}${top.team} vs ${top.opponent}</div>
+      <div class="potw-hero-prob">${Math.round(top.prob*100)}%<span>card probability</span></div>
+    </div>` : `
+    <div class="potw-hero potw-hero-empty">
+      <i aria-hidden="true" class="ti ti-star"></i>
+      <div>Not enough data yet this week.</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px">This pool builds as you browse — open a few matches' Analysis tabs and check back here. There's no bulk backend fetch behind it.</div>
+    </div>`;
+
+  const poolRows = pool.length>1 ? pool.map((e,i)=>`
+    <div class="potw-row${i===0?' potw-row-top':''}" onclick="openMatch(${e.fid})" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <span class="potw-rank">${i+1}</span>
+      <span class="potw-nm">${e.name}<span class="potw-team">${e.team} vs ${e.opponent}</span></span>
+      <span class="potw-prob">${Math.round(e.prob*100)}%</span>
+    </div>`).join('') : '';
+
+  const lookback = _picksLookback;
+  const filtered = filterHistoryByLookback(history, lookback);
+  const resolved = filtered.filter(h=>h.result==='hit'||h.result==='miss');
+  const hits = resolved.filter(h=>h.result==='hit').length;
+  const hitRate = resolved.length ? Math.round(hits/resolved.length*100) : null;
+  const pendingCount = filtered.filter(h=>h.result==='pending').length;
+
+  const lookbackOpts = POTW_LOOKBACK_OPTIONS.map(o=>`<option value="${o.v}"${String(lookback)===String(o.v)?' selected':''}>${o.label}</option>`).join('');
+
+  const historyRows = [...filtered].sort((a,b)=>new Date(b.matchDate)-new Date(a.matchDate)).map(h=>{
+    const badge = h.result==='hit' ? '<span class="potw-res potw-hit"><i aria-hidden="true" class="ti ti-check"></i> Hit</span>'
+                : h.result==='miss' ? '<span class="potw-res potw-miss"><i aria-hidden="true" class="ti ti-x"></i> Miss</span>'
+                : '<span class="potw-res potw-pending">Pending</span>';
+    return `<div class="potw-hist-row" onclick="openMatch(${h.fid})" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <span class="potw-hist-wk">${h.weekKey||''}</span>
+      <span class="potw-hist-nm">${h.name}<span class="potw-team">${h.team} vs ${h.opponent}</span></span>
+      ${badge}
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="tip-box" style="margin-bottom:14px">
+      Ranked by a confidence-adjusted score — card probability discounted for how few appearances back it up — so a thin-sample spike can't outrank a well-established regular. The % shown is always the same real model probability seen elsewhere in the app, never adjusted for ranking.
+    </div>
+    ${heroHtml}
+    ${poolRows?`<div class="potw-sec-hd">This week's pool (${pool.length})</div><div class="potw-pool">${poolRows}</div>`:''}
+    <div class="potw-sec-hd" style="margin-top:18px;display:flex;align-items:center;gap:8px">Track record
+      <select class="sb-league-sel" style="width:auto;font-size:10px" onchange="setPicksLookback(this.value)">${lookbackOpts}</select>
+    </div>
+    ${resolved.length?`<div class="potw-hitrate">${hits}/${resolved.length} hit<span>${hitRate}% hit rate${pendingCount?' · '+pendingCount+' pending':''}</span></div>`
+      :`<div class="no-data" style="padding:20px 10px"><i aria-hidden="true" class="ti ti-star-off"></i>No resolved picks yet in this window.${pendingCount?` (${pendingCount} still pending.)`:''}</div>`}
+    ${historyRows?`<div class="potw-hist">${historyRows}</div>`:''}
+  `;
+}
+
 function shouldPollFixtures(){
-  if(_activeId||_leaguesOpen||_activeClubId||_clubSearchOpen)return false;
+  if(_activeId||_leaguesOpen||_activeClubId||_clubSearchOpen||_picksOpen)return false;
   if(document.hidden)return false;
   if(_fixturesCache.length){
     const tracked=_fixturesCache.filter(isTrackedLeague);

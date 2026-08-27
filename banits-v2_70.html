@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banits Betting v2</title>
+<!-- PWA / installable app -->
+<meta name="theme-color" content="#02091C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Banits">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="Banits Betting">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/tabler-icons.min.css" rel="stylesheet">
+<link rel="stylesheet" href="banits.css">
+<!-- Light/dark theme (Phase 4, 2026-08-27) — applied here, synchronously,
+     before first paint, so a returning light-mode user never sees a flash
+     of the dark default. banits.js's setTheme()/initTheme() take over from
+     here for the toggle button + meta theme-color sync. -->
+<script>try{if(localStorage.getItem('banits_theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
+<body>
+<!-- Mobile sidebar overlay backdrop -->
+<div id="sb-overlay" onclick="closeSidebar()"></div>
+<div id="app">
+
+  <!-- SIDEBAR -->
+  <div id="sb">
+    <div class="sb-hd">
+      <div class="sb-logo" onclick="goHome();closeSidebar()" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+        <i aria-hidden="true" class="ti ti-shield-bolt"></i>Banits Betting<small>v2</small>
+      </div>
+    </div>
+    <div class="sb-date-nav">
+      <button onclick="changeDay(-1)" title="Previous day"><i aria-hidden="true" class="ti ti-arrow-left"></i> Prev</button>
+      <span id="sb-date-lbl">Today</span>
+      <button onclick="changeDay(1)" title="Next day">Next <i aria-hidden="true" class="ti ti-arrow-right"></i></button>
+    </div>
+    <!-- Home button — visible on mobile inside the sidebar -->
+    <div class="sb-home-btn" onclick="goHome();closeSidebar()" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <i aria-hidden="true" class="ti ti-home"></i> Home / Fixtures
+    </div>
+    <!-- Leagues — always-visible top-level nav entry (desktop & mobile) -->
+    <div class="sb-nav-btn" onclick="openLeagues();closeSidebar()" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <i aria-hidden="true" class="ti ti-table"></i> League Tables
+    </div>
+    <!-- Club Search — always-visible top-level nav entry (desktop & mobile) -->
+    <div class="sb-nav-btn" onclick="openClubSearch();closeSidebar()" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <i aria-hidden="true" class="ti ti-search"></i> Club Search
+    </div>
+    <!-- Pick of the Week — always-visible top-level nav entry (desktop &
+         mobile). Deliberately not in the mobile bottom nav (see openPicks()
+         comment) to avoid re-cluttering it after Phase 4's decluttering. -->
+    <div class="sb-nav-btn" onclick="openPicks();closeSidebar()" role="button" tabindex="0" onkeydown="_kbActivate(event)">
+      <i aria-hidden="true" class="ti ti-star"></i> Pick of the Week
+    </div>
+    <!-- Season data toggle -->
+    <div class="sb-season-tog">
+      <span class="sb-season-lbl">Season data</span>
+      <div class="sb-season-btns">
+  <button id="stog-2025" class="stog-btn" onclick="setSeasonMode('2025')">25/26</button>
+        <button id="stog-2026" class="stog-btn" onclick="setSeasonMode('2026')">26/27</button>
+        <button id="stog-both" class="stog-btn" onclick="setSeasonMode('both')" title="Blend both seasons together for a bigger sample">Both</button>
+      </div>
+    </div>
+    <!-- Light/dark theme toggle -->
+    <div class="sb-season-tog">
+      <span class="sb-season-lbl">Appearance</span>
+      <div class="sb-season-btns">
+        <button id="theme-dark-btn" class="stog-btn" onclick="setTheme('dark')"><i aria-hidden="true" class="ti ti-moon" style="font-size:11px;margin-right:3px"></i>Dark</button>
+        <button id="theme-light-btn" class="stog-btn" onclick="setTheme('light')"><i aria-hidden="true" class="ti ti-sun" style="font-size:11px;margin-right:3px"></i>Light</button>
+      </div>
+    </div>
+    <div id="sb-list"></div>
+    <div class="sb-ft">
+      <div class="sb-ft-ttl">Data sources</div>
+      <div><i aria-hidden="true" class="ti ti-api" style="font-size:10px;margin-right:4px"></i>Live fixture & match data</div>
+    <div id="sb-calls" style="margin-top:4px;color:var(--dim)">API calls: 0</div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div id="main" role="main">
+
+    <!-- Landing — populated by renderLanding() in JS -->
+    <div id="landing" tabindex="-1"></div>
+
+    <!-- Match view -->
+    <div id="mv" style="display:none" tabindex="-1">
+      <div class="mv-hdr" id="mv-hdr" aria-live="polite"></div>
+      <div class="tab-nav" role="tablist" aria-label="Match view sections">
+        <button id="tabbtn-ov" class="tab-btn on" role="tab" aria-selected="true" aria-controls="tab-ov" onclick="switchTab('ov',this)"><i aria-hidden="true" class="ti ti-chart-bar" style="font-size:11px;margin-right:4px"></i>Overview</button>
+        <button id="tabbtn-lu" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-lu" onclick="switchTab('lu',this)"><i aria-hidden="true" class="ti ti-layout-list" style="font-size:11px;margin-right:4px"></i>Lineups</button>
+        <button id="tabbtn-ls" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-ls" onclick="switchTab('ls',this)"><i aria-hidden="true" class="ti ti-activity" style="font-size:11px;margin-right:4px"></i>Live stats</button>
+        <button id="tabbtn-sa" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-sa" onclick="switchTab('sa',this)"><i aria-hidden="true" class="ti ti-target" style="font-size:11px;margin-right:4px"></i>Analysis</button>
+        <button id="tabbtn-mu" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-mu" onclick="switchTab('mu',this)"><i aria-hidden="true" class="ti ti-swords" style="font-size:11px;margin-right:4px"></i>Matchups</button>
+        <button id="tabbtn-tp" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-tp" onclick="switchTab('tp',this)"><i aria-hidden="true" class="ti ti-star" style="font-size:11px;margin-right:4px"></i>Top Picks</button>
+        <button id="tabbtn-od" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-od" onclick="switchTab('od',this)"><i aria-hidden="true" class="ti ti-trending-up" style="font-size:11px;margin-right:4px"></i>Predictions</button>
+      </div>
+      <div class="tab-panels">
+        <div id="tab-ov" class="tab-pnl on" role="tabpanel" aria-labelledby="tabbtn-ov" tabindex="0"></div>
+        <div id="tab-lu" class="tab-pnl" role="tabpanel" aria-labelledby="tabbtn-lu" tabindex="0"></div>
+        <div id="tab-ls" class="tab-pnl" role="tabpanel" aria-labelledby="tabbtn-ls" tabindex="0"></div>
+        <div id="tab-sa" class="tab-pnl" role="tabpanel" aria-labelledby="tabbtn-sa" tabindex="0" aria-live="polite"></div>
+        <div id="tab-mu" class="tab-pnl" role="tabpanel" aria-labelledby="tabbtn-mu" tabindex="0"></div>
+        <div id="tab-tp" class="tab-pnl" role="tabpanel" aria-labelledby="tabbtn-tp" tabindex="0"></div>
+        <div id="tab-od" class="tab-pnl" role="tabpanel" aria-labelledby="tabbtn-od" tabindex="0"></div>
+      </div>
+    </div>
+
+    <!-- Leagues (standings) view -->
+    <div id="lg" style="display:none" tabindex="-1">
+      <div class="lg-hdr">
+        <h1 class="lg-hdr-ttl"><i aria-hidden="true" class="ti ti-table"></i> League Tables</h1>
+      </div>
+      <div class="tab-nav" id="lg-tabs" role="tablist" aria-label="League selector"></div>
+      <div id="lg-body" class="lg-body" role="tabpanel" tabindex="0"></div>
+    </div>
+
+    <!-- Club Search view -->
+    <div id="clubsearch" style="display:none" tabindex="-1">
+      <div class="lg-hdr">
+        <h1 class="lg-hdr-ttl"><i aria-hidden="true" class="ti ti-search"></i> Club Search</h1>
+      </div>
+      <div id="club-search-body" class="lg-body">
+        <input id="club-search-input" class="club-search-input" type="text" placeholder="Search a club — e.g. Birmingham City" aria-label="Search a club" oninput="onClubSearchInput(this.value)" autocomplete="off">
+        <div id="club-search-results" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <!-- Club page view -->
+    <div id="club" style="display:none" tabindex="-1">
+      <div class="mv-hdr" id="club-hdr" aria-live="polite"></div>
+      <div id="club-body" class="lg-body" aria-live="polite"></div>
+    </div>
+
+    <!-- Pick of the Week view -->
+    <div id="picks" style="display:none" tabindex="-1">
+      <div class="lg-hdr">
+        <h1 class="lg-hdr-ttl"><i aria-hidden="true" class="ti ti-star"></i> Pick of the Week</h1>
+      </div>
+      <div id="picks-body" class="lg-body" aria-live="polite"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Mobile bottom nav — desktop/tablet: hidden (see CSS, ≤600px only).
+     One-tap access to the two top-level views without opening the sidebar
+     drawer first (was hamburger → drawer slide-in → tap → drawer closes;
+     now just a tap). Kept outside #app so its position:fixed can't be
+     clipped by any ancestor's overflow:hidden. -->
+<nav id="bottom-nav" class="bottom-nav">
+  <button class="bn-btn on" id="bn-home" onclick="goHome()" aria-label="Fixtures">
+    <i aria-hidden="true" class="ti ti-home"></i><span>Fixtures</span>
+  </button>
+  <button class="bn-btn" id="bn-leagues" onclick="openLeagues()" aria-label="League Tables">
+    <i aria-hidden="true" class="ti ti-table"></i><span>Leagues</span>
+  </button>
+  <button class="bn-btn" id="bn-search" onclick="openClubSearch()" aria-label="Club Search">
+    <i aria-hidden="true" class="ti ti-search"></i><span>Search</span>
+  </button>
+  <button class="bn-btn" id="bn-menu" onclick="openSidebar()" aria-label="Menu">
+    <i aria-hidden="true" class="ti ti-menu-2"></i><span>Menu</span>
+  </button>
+</nav>
+
+<script src="banits.js"></script>
+</body>
+</html>
