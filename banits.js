@@ -1145,12 +1145,30 @@ async function openMatch(fid){
 // fixtureCacheStale()).
 const FX_TTL_NO_LINEUP   = 90000;   // 90s
 const FX_TTL_LINEUP_SET  = 300000;  // 5 min
+
+// 2026-08-27: a final match's lineups can come back with a real startXI
+// list but no per-player grid/formation data — a genuine, observed
+// API-Football data-quality gap (not every competition/round gets that
+// layer populated in time), rather than a client bug. When it happens,
+// gridXY() has nothing to place players with, so every player collapses
+// onto the same pitch coordinate and the formation badge shows "?". A
+// final match with this problem would otherwise get treated as "safe to
+// cache forever" purely because its RESULT is final — locking the broken
+// layout into localStorage permanently. This only returns false for the
+// genuinely-broken case (lineups reported but incomplete for a team) —
+// a final match that never gets lineup data published at all (lineups.length
+// < 2) is a normal, legitimate state and is NOT treated as broken here.
+function hasUsableLineups(fx){
+  const lineups = fx?.lineups || [];
+  if(lineups.length < 2) return true;
+  return lineups.every(l => l?.formation && Array.isArray(l?.startXI) && l.startXI.length > 0);
+}
 function fixtureCacheStale(cached){
   const f = cached?.response?.[0];
   if(!f) return true;
   const status = f.fixture?.status?.short;
   if(isLive(status)) return true;   // always refetch live matches
-  if(isFinal(status)) return false; // final result never changes — never stale
+  if(isFinal(status)) return !hasUsableLineups(f); // final result never changes — but keep retrying if the lineup data came back broken
   const hasLineups = (f.lineups||[]).length>=2;
   const ttl = hasLineups ? FX_TTL_LINEUP_SET : FX_TTL_NO_LINEUP;
   return (Date.now() - (cached._cachedAt||0)) >= ttl;
@@ -1161,8 +1179,12 @@ function cacheFixtureDetail(fid, detail){
   // A finished match's result/lineups/events never change again — worth
   // persisting across reloads/sessions so reopening a past match is free.
   // See LS_TTL_COMPLETE/isSeasonComplete in the persistent-cache helpers.
+  // Skip persisting to localStorage (but still keep the in-memory copy —
+  // it's still the best data available this session) when the lineup data
+  // came back broken — see hasUsableLineups() — so a future session gets a
+  // fresh shot at a complete lineup instead of a broken one locked in.
   const status = detail?.response?.[0]?.fixture?.status?.short;
-  if(isFinal(status)) lsSet('banits_fx_'+fid, detail, LS_TTL_COMPLETE);
+  if(isFinal(status) && hasUsableLineups(detail?.response?.[0])) lsSet('banits_fx_'+fid, detail, LS_TTL_COMPLETE);
 }
 
 // Shared by the live-match ticker and the pre-kickoff lineup-watch ticker:
