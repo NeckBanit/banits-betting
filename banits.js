@@ -20,6 +20,12 @@ function _apiHdrs(){
 }
 const LIVE_STATUSES = new Set(['1H','HT','2H','ET','BT','P','LIVE']);
 const FINAL_STATUSES = new Set(['FT','AET','PEN','AWD','WO']);
+// 2026-08-27 (follow-up #16, quick win): position multiplier used by
+// cardProb() — was a literal `{'G':0.2,'D':1.4,'M':1.0,'F':0.65}` duplicated
+// in 3 places (cardProb itself, and 2 UI spots that display the same factor
+// back to the user as part of the formula breakdown). A tuning change to the
+// model could previously desync from what the UI explains — one constant now.
+const POS_FACTOR = {'G':0.2,'D':1.4,'M':1.0,'F':0.65};
 
 let _dayOffset   = 0;         // offset from today
 let _activeId    = null;      // currently open fixture ID
@@ -114,6 +120,14 @@ const TC = {
   'Uzbekistan':{c:'#5fc4e8',a:'UZB'},'Kazakhstan':{c:'#e5d425',a:'KAZ'},
 };
 const FB_COLS=['#60a5fa','#f87171','#34d399','#fbbf24','#a78bfa','#fb923c','#38bdf8','#f472b6'];
+
+// 2026-08-27 (follow-up #16, quick win): hex→rgba() was reimplemented as a
+// local function in 4 separate places (buildHeader, renderMatchupsTab's
+// top-threat banner, buildLiveSpotlight, buildClubHeaderShell) — one copy
+// (renderMatchupsTab's, under the name hex2rgba) was missing the `hex||
+// '#0047b5'` safe default the other three had, a landmine if ever called
+// with a falsy color. One shared implementation now.
+function h2r(hex,a){const r=(hex||'#0047b5').replace('#','').match(/.{2}/g)||['0','47','b5'];return`rgba(${r.map(x=>parseInt(x,16)).join(',')},${a})`;}
 
 function tinfo(name=''){
   const direct=TC[name]; if(direct)return direct;
@@ -619,6 +633,26 @@ async function getHistoricalCardCount(fx){
   return events.filter(e=>e.type==='Card').length;
 }
 
+// 2026-08-27 (follow-up #16, quick win): getRefereeFactor() and
+// getLeagueCardBaseline() both need "this league's full list of finished
+// fixtures this season" and, until now, each independently called this exact
+// same /fixtures?league=&season=&status=FT URL — only their own DERIVED
+// result was cached, not the raw list, so opening a single match view (which
+// runs both via loadSeasonAnalysis()'s/updateCalibrationCheck()'s own
+// Promise.all) fetched the same ~380-fixture list twice. Promise-cached (not
+// just value-cached) so whichever of the two asks first serves the other's
+// identical in-flight request too, not just a later cold call.
+const _leagueFtFixturesCache = new Map(); // `${leagueId}_${season}` → Promise<fixture[]>
+function getLeagueFtFixtures(leagueId, season){
+  const key = `${leagueId}_${season}`;
+  if(_leagueFtFixturesCache.has(key)) return _leagueFtFixturesCache.get(key);
+  const promise = afFetch(`/fixtures?league=${leagueId}&season=${season}&status=FT`)
+    .then(data => data?.response || [])
+    .catch(()=>[]);
+  _leagueFtFixturesCache.set(key, promise);
+  return promise;
+}
+
 async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId){
   const none = {factor:1, sample:0, avgCards:null, leagueAvgCards:null, refereeName:refereeName||null};
   if(!refereeName || !leagueId || !season) return none;
@@ -626,8 +660,7 @@ async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId)
   if(_refCache.has(key)) return _refCache.get(key);
 
   try{
-    const data = await afFetch(`/fixtures?league=${leagueId}&season=${season}&status=FT`);
-    const all = data?.response || [];
+    const all = await getLeagueFtFixtures(leagueId, season);
     if(!all.length){ _refCache.set(key, none); return none; }
 
     // Referee names from the API are inconsistently formatted ("S. Attwell"
@@ -832,8 +865,7 @@ async function getLeagueCardBaseline(leagueId, season){
   const key = `${leagueId}_${season}`;
   if(_leagueCardCache.has(key)) return _leagueCardCache.get(key);
   try{
-    const data = await afFetch(`/fixtures?league=${leagueId}&season=${season}&status=FT`);
-    const all = data?.response || [];
+    const all = await getLeagueFtFixtures(leagueId, season); // shared with getRefereeFactor() — see its comment
     if(!all.length){ _leagueCardCache.set(key,null); return null; }
     const sample = all.slice(0, CALIB_SAMPLE_CAP);
     const counts = await Promise.all(sample.map(getHistoricalCardCount));
@@ -1014,8 +1046,6 @@ function renderSidebarList(fixtures){
 
   list.innerHTML=html;
 }
-
-function toggleLeagues(){ /* replaced by league dropdown */ }
 
 function setLeagueFilter(id){
   _leagueFilter = id;
@@ -1318,6 +1348,10 @@ async function loadMatchContext(fx,ht,at){
     ]);
     if(fid) _matchContextCache.set(fid, {hForm,aForm,standingsTable,h2hData,ts:Date.now()});
   }
+  // 2026-08-27 (follow-up #16): same stale-match guard as loadSeasonAnalysis/
+  // loadOddsTab — the user may have opened a different match while the
+  // Promise.all above was in flight.
+  if(fid && _activeId!==fid) return;
 
   // ── Form strips ──────────────────────────────────────────────
   function processForm(data,teamId){
@@ -1472,9 +1506,16 @@ function buildClubRateLimitMessage(teamId){
 }
 
 async function loadSeasonAnalysis(hId,aId,fx,ht,at){
-  const isIntl = INTL_LEAGUES.has(fx.league?.id);
-  const lineups = fx.lineups||[];
-  const hasLineups = lineups.length >= 2;
+  // 2026-08-27 (follow-up #16): captured up front so every await point below
+  // can re-check "is this still the open match" before writing to the DOM or
+  // to the match-scoped globals (_currentRefFactor etc.) — see the guards
+  // sprinkled through this function. Without them, opening a new match while
+  // a slow full-squad fetch for the PREVIOUS match was still in flight could
+  // let that stale data paint over (or set globals for) the match now on
+  // screen — every sibling loader in the file (refreshMatchView,
+  // pollForLineup, loadLeagueStandings, loadClubPage) already guards this
+  // way; this function is the biggest and slowest one, so it needed it most.
+  const fid = fx.fixture?.id;
 
   // Referee tendency — resolved once, up front, so every cardProb() call
   // made anywhere below (for any player, in any branch) already reflects
@@ -1488,9 +1529,14 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
     getRefereeFactor(fx.fixture?.referee, fx.league?.id, fx.league?.season, fx.fixture?.id),
     getInjuries(fx.fixture?.id),
   ]);
+  if(_activeId!==fid) return; // user navigated away while these were in flight — don't set stale globals
   _currentRefFactor = refInfo.factor;
   _currentRefMeta = refInfo;
   _currentInjuries = injuredMap;
+
+  const isIntl = INTL_LEAGUES.has(fx.league?.id);
+  const lineups = fx.lineups||[];
+  const hasLineups = lineups.length >= 2;
 
   if(isIntl && hasLineups){
     // ── NATIONAL TEAM MATCH with confirmed lineup ───────────────
@@ -1519,6 +1565,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       [...hStarters,...aStarters], seasonChain,
       (done,total)=>showProgress(done,total,'Fetching starters')
     );
+    if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
     if(_breakerTripped){document.getElementById('tab-sa').innerHTML=buildRateLimitMessage();return;}
 
     let i=0;
@@ -1537,6 +1584,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       const benchResults = await fetchPlayersThrottled(
         [...hBench,...aBench], seasonChain, null // no progress bar for background load
       );
+      if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
       if(!_breakerTripped){
         let j=0;
         const hBenchP = benchResults.slice(j,j+=hBench.length).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
@@ -1561,6 +1609,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       afFetch(`/players/squads?team=${hId}`),
       afFetch(`/players/squads?team=${aId}`),
     ]);
+    if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
     const hSquadPlayers = hSquad?.response?.[0]?.players||[];
     const aSquadPlayers = aSquad?.response?.[0]?.players||[];
 
@@ -1572,6 +1621,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       const cSeason = seasonChain[0];
       const allPlayers = [...hSquadPlayers, ...aSquadPlayers];
       const results = await fetchPlayersThrottled(allPlayers, seasonChain);
+      if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
 
       const hP = results.slice(0, hSquadPlayers.length).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
       const aP = results.slice(hSquadPlayers.length).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
@@ -1602,6 +1652,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         fetchTeamIntl(hId, fx.teams.home.name),
         fetchTeamIntl(aId, fx.teams.away.name),
       ]);
+      if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
       const hP = processPlayers(hR?.response||[]);
       const aP = processPlayers(aR?.response||[]);
 
@@ -1673,6 +1724,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         ),
         getRecentFormMap(hId, aId),
       ]);
+      if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
       if(_breakerTripped){document.getElementById('tab-sa').innerHTML=buildRateLimitMessage();return;}
 
       let i=0;
@@ -1687,6 +1739,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       // Phase 2 — bench loads in background
       if(hBench.length||aBench.length){
         const bRes=await fetchPlayersThrottled([...hBench,...aBench],seasonChain,null,{blend});
+        if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
         if(!_breakerTripped){
           let j=0;
           const hBenchP=applyRecentForm(bRes.slice(j,j+=hBench.length),recentFormMap).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
@@ -1728,6 +1781,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         blend?fetchTeamAllPages(hId,altSeason):Promise.resolve([]),
         blend?fetchTeamAllPages(aId,altSeason):Promise.resolve([]),
       ]);
+      if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
 
       function nn2(n){return(n||'').toLowerCase().replace(/ß/g,'ss').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]/g,' ').replace(/ +/g,' ').trim();}
 
@@ -1966,7 +2020,7 @@ function _detectPlanFromHeaders(headers){
     else if(lim >= 300) _afConcurrent = 4;
     else if(lim >= 60)  _afConcurrent = 2;
     else                _afConcurrent = 1; // free plan: 10/min
-    console.log(`[AF] Plan detected: ${lim} req/min → ${_afConcurrent} concurrent slots, ${_afMinGapMs}ms min gap between dispatches`);
+    console.debug(`[AF] Plan detected: ${lim} req/min → ${_afConcurrent} concurrent slots, ${_afMinGapMs}ms min gap between dispatches`);
   }catch(e){}
 }
 
@@ -2174,22 +2228,18 @@ function normalizePos(pos){
   return '?';
 }
 
-// For club matches, build a season fallback chain from the fixture's league.season.
-// Capped at 2 to avoid excessive API calls (was generating 4 tries × 2 teams = 8 calls).
-function buildSeasonChain(leagueSeason){
-  const current=new Date().getFullYear();
-  const chain=[];
-  if(leagueSeason) chain.push(leagueSeason);
-  const fallback=(!leagueSeason||leagueSeason===current)?current-1:current;
-  if(!chain.includes(fallback)) chain.push(fallback);
-  return chain;
-}
-
 async function loadOddsTab(fid,fx,ht,at){
   const[pd,od]=await Promise.all([
     afFetch(`/predictions?fixture=${fid}`),
     afFetch(`/odds?fixture=${fid}&bookmaker=6`),
   ]);
+  // 2026-08-27 (follow-up #16): every sibling async loader fired from
+  // openMatch() (refreshMatchView, pollForLineup, loadLeagueStandings,
+  // loadClubPage) already re-checks before painting — this one didn't, so a
+  // slow-to-resolve Odds tab for a match the user has since navigated away
+  // from could render underneath the new match's header with no indication
+  // anything was stale.
+  if(_activeId!==fid) return;
   document.getElementById('tab-od').innerHTML=buildOddsTab(pd,od,fx,ht,at);
 }
 
@@ -2202,8 +2252,7 @@ function buildHeader(fx,ht,at){
   const sc=g.home!==null?`${g.home} &ndash; ${g.away}`:'&ndash;';
   const stDisp=live?(f.status.short==='HT'?'Half Time':`${f.status.elapsed}' — LIVE`):
                fin?'Full Time':fmtTime(f.date);
-  // Team colour gradient: home bleeds from left, away from right
-  function h2r(hex,a){const r=(hex||'#0047b5').replace('#','').match(/.{2}/g)||['0','47','b5'];return`rgba(${r.map(x=>parseInt(x,16)).join(',')},${a})`;}
+  // Team colour gradient: home bleeds from left, away from right — h2r() is the shared top-level helper
   const hGrad=h2r(ht.c,0.14);
   const aGrad=h2r(at.c,0.14);
   return`<div>
@@ -2407,27 +2456,44 @@ function gridXY(grid,formation){
 
 // Build a name→stats lookup from season analysis results.
 // Matches on last name since lineup names ("L. Messi") vs season names ("Lionel Messi") can differ.
+// 2026-08-27 (follow-up #16): strips any surname key that belongs to more
+// than one player before returning — previously "last write wins" meant two
+// players sharing a surname (not rare in football) would silently swap each
+// other's card%/fouls/photo on the pitch overlay whenever a lookup missed
+// the full-name key (e.g. lineup gives a short/initialed name that doesn't
+// exactly match the season-stats source's full name). An ambiguous surname
+// now correctly falls through to "no match" instead of confidently
+// returning the wrong player.
+function _dropAmbiguousSurnames(map, surnameCounts){
+  for(const last in surnameCounts){
+    if(surnameCounts[last]>1) delete map[last];
+  }
+}
 function statsLookup(players){
-  const map={};
+  const map={}, surnameCounts={};
   for(const p of players||[]){
     if(!p||p.noData)continue;
     const last=p.name.split(' ').pop().toLowerCase();
+    surnameCounts[last]=(surnameCounts[last]||0)+1;
     map[last]=p;
     map[p.name.toLowerCase()]=p;
   }
+  _dropAmbiguousSurnames(map, surnameCounts);
   return map;
 }
 
 // Like statsLookup but includes noData players — photo is returned by
 // /players/squads regardless of whether club stats were found.
 function photoLookup(players){
-  const map={};
+  const map={}, surnameCounts={};
   for(const p of players||[]){
     if(!p)continue;
     const last=p.name.split(' ').pop().toLowerCase();
+    surnameCounts[last]=(surnameCounts[last]||0)+1;
     map[last]=p;
     map[p.name.toLowerCase()]=p;
   }
+  _dropAmbiguousSurnames(map, surnameCounts);
   return map;
 }
 
@@ -2737,7 +2803,7 @@ function tpProbCls(p){return p>=0.5?'hi':p>=0.25?'md':'lo'}
 
 function buildBookingPickRow(p, col, rank){
   const pct = Math.round(p.prob*100);
-  const posFactor = {'G':0.2,'D':1.4,'M':1.0,'F':0.65}[p.pos]||1.0;
+  const posFactor = POS_FACTOR[p.pos]||1.0;
   const photoImg = p.photo?`<img src="${p.photo}" alt="" class="tp-photo" loading="lazy" onerror="this.remove()">`:'';
   const srcTxt = p.srcTeam||p.srcLeague
     ? `${p.srcTeam||''}${p.srcTeam&&p.srcLeague?' · ':''}${p.srcLeague||''}`
@@ -3022,10 +3088,17 @@ function processPlayers(response){
     const p=r.player;
     const stats=r.statistics||[];
 
-    // Apply same priority as extractDomesticStats:
-    // main leagues first (even with few apps), then 5+ app fallback, cups excluded
+    // Apply same priority as extractDomesticStats — including its "0-app
+    // rows are valid if it's the player's league" rule (2026-08-27 follow-up
+    // #16: this file previously filtered 0-app main-league rows out of
+    // mainRows a step earlier than extractDomesticStats did, so the two
+    // functions disagreed on the exact same input: a player with 0 apps in a
+    // tracked main league fell through to a smaller-league fallback here but
+    // correctly got "no data yet" from extractDomesticStats. Matching it
+    // exactly below, including its apps===0 → null return, removes the
+    // divergence and the `||1` apps fallback that papered over it.
     const mainRows=stats
-      .filter(s=>MAIN_LEAGUE_IDS.has(s.league?.id)&&(s.games?.appearences||0)>0)
+      .filter(s=>MAIN_LEAGUE_IDS.has(s.league?.id))
       .sort((a,b)=>(b.games?.appearences||0)-(a.games?.appearences||0));
     const fallbackRows=mainRows.length===0
       ? stats.filter(s=>!INTL_LEAGUES.has(s.league?.id)&&(s.games?.appearences||0)>=1)
@@ -3033,9 +3106,10 @@ function processPlayers(response){
       : [];
     const st=mainRows[0]||fallbackRows[0];
     if(!st) return null; // only cup data or nothing useful
+    const apps=st.games?.appearences||0;
+    if(apps===0) return null; // player is in the right league but hasn't played yet
 
     const mins=Math.max(st.games?.minutes||0,1);
-    const apps=st.games?.appearences||1;
     const fc=st.fouls?.committed||0;
     const fd=st.fouls?.drawn||0;
     const tk=st.tackles?.total||0;
@@ -3080,7 +3154,7 @@ function calcExpectedCards(players){
 }
 
 function cardProb(fp90,pos,yc,apps,recentFactor=1){
-  const pf={'G':0.2,'D':1.4,'M':1.0,'F':0.65}[pos]||1.0;
+  const pf=POS_FACTOR[pos]||1.0;
   // _currentRefFactor (see getRefereeFactor()) and recentFactor (see
   // recentFormFactor(), SECTION 4d) both only scale the foul-based half of
   // λ, not the historical-rate half — neither the referee nor a recent hot
@@ -3174,14 +3248,13 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
   // ── Top threat per team ──────────────────────────────────────
   const topThreat=(players)=>players.filter(p=>p.xistatus==='starter'&&p.prob!==null&&!p.noData&&!_currentInjuries?.has(p.id)).sort((a,b)=>b.prob-a.prob)[0]||null;
   const hTop=topThreat(hPs), aTop=topThreat(aPs);
-  function hex2rgba(hex,a){const r=hex.replace('#','').match(/.{2}/g)||['0','47','b5'];return`rgba(${r.map(x=>parseInt(x,16)).join(',')},${a})`;}
   const threatBanner=(hTop||aTop)?`
   <div class="top-threat">
-    <div class="tt-card" style="border-color:${hex2rgba(ht.c,.3)};border-top:2px solid ${ht.c}">
+    <div class="tt-card" style="border-color:${h2r(ht.c,.3)};border-top:2px solid ${ht.c}">
       <div class="tt-label" style="color:${ht.c}">⚠ Top risk · ${fx.teams.home.name.split(' ').pop()}</div>
       ${hTop?`<div class="tt-name">${hTop.name}</div><div class="tt-pct ${probColor(Math.round(hTop.prob*100))}">${Math.round(hTop.prob*100)}%</div><div class="tt-sub">yellow card probability</div>`:'<div style="color:var(--dim);font-size:11px;padding:8px 0">No data</div>'}
     </div>
-    <div class="tt-card" style="border-color:${hex2rgba(at.c,.3)};border-top:2px solid ${at.c}">
+    <div class="tt-card" style="border-color:${h2r(at.c,.3)};border-top:2px solid ${at.c}">
       <div class="tt-label" style="color:${at.c}">⚠ Top risk · ${fx.teams.away.name.split(' ').pop()}</div>
       ${aTop?`<div class="tt-name">${aTop.name}</div><div class="tt-pct ${probColor(Math.round(aTop.prob*100))}">${Math.round(aTop.prob*100)}%</div><div class="tt-sub">yellow card probability</div>`:'<div style="color:var(--dim);font-size:11px;padding:8px 0">No data</div>'}
     </div>
@@ -3248,7 +3321,7 @@ function buildSaCard(p,isIntl,src){
       : (isIntl&&src==='intl'?'National team competition':'Club data'));
 
   // Formula breakdown for expanded view
-  const posFactor = {'G':0.2,'D':1.4,'M':1.0,'F':0.65}[p.pos]||1.0;
+  const posFactor = POS_FACTOR[p.pos]||1.0;
   const refFactor = _currentRefFactor;
   const refApplied = _currentRefMeta && _currentRefMeta.sample>=REF_MIN_SAMPLE && _currentRefMeta.avgCards!==null && refFactor!==1;
   const recentFactor = p.recentFormFactor || 1; // see applyRecentForm()/recentFormFactor(), SECTION 4d
@@ -3325,7 +3398,13 @@ function buildOddsTab(predData,oddsData,fx,ht,at){
 
   if(pred){
     const wp=pred.percent||{};
-    hp=parseInt(wp.home)||33; dp=parseInt(wp.draw)||34; ap=100-hp-dp;
+    // 2026-08-27 (follow-up #16): `||` collapses a genuine "0" win-percentage
+    // string to the arbitrary 33/34 default — same falsy-vs-missing bug class
+    // fixed elsewhere this week (openMatch's cache check, getStandingsTable's
+    // empty-array check). Number.isFinite tells "parsed to a real 0" apart
+    // from "didn't parse at all" (NaN), so a real 0% only shows as 0%.
+    const hpParsed=parseInt(wp.home,10), dpParsed=parseInt(wp.draw,10);
+    hp=Number.isFinite(hpParsed)?hpParsed:33; dp=Number.isFinite(dpParsed)?dpParsed:34; ap=100-hp-dp;
     if(pred.winner?.name){
       h+=`<div class="pred-winner">
         <div class="pw-lbl">Predicted winner</div>
@@ -3556,6 +3635,14 @@ function goHome(){
   _leaguesOpen=false;
   _activeClubId=null;
   _clubSearchOpen=false;
+  // 2026-08-27 (follow-up #16): see the identical reset in openMatch() — a
+  // referee factor or injury list belongs to whichever match set it, never
+  // to whatever's opened next. Without this, cardProb() calls made from a
+  // NEW match view already reset their own copy correctly on entry, but any
+  // in-between screen (like this one) could still be read by, e.g., a
+  // dev-tools console call or a future feature that computes probabilities
+  // outside of a match context while landing/home is showing.
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
   if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}
   document.getElementById('landing').style.display='flex';
   document.getElementById('mv').style.display='none';
@@ -3835,7 +3922,6 @@ function buildLiveSpotlight(liveFixtures){
   if(!liveFixtures.length) return '';
   const fx = [...liveFixtures].sort((a,b)=>new Date(a.fixture.date)-new Date(b.fixture.date))[0];
   const ht=tinfo(fx.teams.home.name), at=tinfo(fx.teams.away.name);
-  function h2r(hex,a){const r=(hex||'#0047b5').replace('#','').match(/.{2}/g)||['0','47','b5'];return`rgba(${r.map(x=>parseInt(x,16)).join(',')},${a})`;}
   const elapsed = fx.fixture.status.elapsed ? fx.fixture.status.elapsed+"'" : 'LIVE';
   const comp = fx.league.country && fx.league.country!=='World' ? `${fx.league.country} · ${fx.league.name}` : fx.league.name;
   const extra = liveFixtures.length>1 ? ` <span class="lp-spot-more">+${liveFixtures.length-1} more live</span>` : '';
@@ -3874,6 +3960,11 @@ function openLeagues(){
   _leaguesOpen=true;
   _activeClubId=null;
   _clubSearchOpen=false;
+  // 2026-08-27 (follow-up #16): see the matching reset in openClub() below —
+  // this view doesn't currently call cardProb() itself, but resetting here
+  // too (not just at the one confirmed call site) means a previous match's
+  // referee factor can never leak into ANY screen reached from here.
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   document.getElementById('lg').style.display='flex';
@@ -4028,6 +4119,8 @@ function getTeamSquad(teamId){
 function openClubSearch(){
   if(_activeId){_activeId=null;if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}}
   _leaguesOpen=false; _activeClubId=null; _clubSearchOpen=true;
+  // 2026-08-27 (follow-up #16): see the matching reset in openClub() below.
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
@@ -4080,7 +4173,6 @@ async function renderClubSearchResults(q){
 
 // ─── The club page itself ────────────────────────────────────────
 function buildClubHeaderShell(entry, info, rank, totalTeams){
-  function h2r(hex,a){const r=(hex||'#0047b5').replace('#','').match(/.{2}/g)||['0','47','b5'];return`rgba(${r.map(x=>parseInt(x,16)).join(',')},${a})`;}
   const grad=h2r(info.c,0.16);
   const posTxt = rank ? `${ordinal(rank.rank)} of ${totalTeams} &middot; ${rank.points} pts` : '';
   // Oversized, faded crest watermark — the same "team identity fills the
@@ -4169,6 +4261,15 @@ async function openClub(teamId){
   else if(!_activeClubId) _clubReturnTo='search';
   if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}
   _activeId=null; _leaguesOpen=false; _clubSearchOpen=false; _activeClubId=teamId;
+  // 2026-08-27 (follow-up #16, bug fix): loadClubPage() below fetches squad
+  // stats through the same cardProb()-calling pipeline as a match view
+  // (fetchPlayersThrottled → extractDomesticStats → cardProb), and cardProb()
+  // reads _currentRefFactor as a global. Without this reset, opening a match
+  // with a confirmed referee adjustment and then navigating straight to a
+  // club page (no other match opened in between) silently applied that
+  // stale referee's factor to every player on this unrelated squad — exactly
+  // what buildClubSquadCard()'s own comment already claimed couldn't happen.
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map();
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
