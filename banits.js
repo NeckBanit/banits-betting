@@ -584,7 +584,15 @@ async function getStandingsTable(leagueId, season){
   const data = await afFetch(`/standings?league=${leagueId}&season=${season}`);
   const table = data?.response?.[0]?.league?.standings?.[0] || null;
   _standingsCache.set(key, table);
-  if(table) lsSet(lsKey, table, lsTtlForSeason(season)); // only persist real data, not a transient empty/failed lookup
+  // 2026-08-27: `table` is an array — an empty array is still truthy in JS,
+  // the same class of bug already found and fixed in buildClubIndex() on
+  // 2026-08-25 (an empty-but-truthy result silently locking in as "the real
+  // answer"). Require actual rows before persisting, so a transient
+  // empty/not-yet-populated standings response can't get cached for up to a
+  // year (a completed season) or 24h (current) — only the in-memory value is
+  // set either way, so this session still sees it; a future session gets a
+  // real retry instead of an empty table baked in.
+  if(table && table.length) lsSet(lsKey, table, lsTtlForSeason(season));
   return table;
 }
 
@@ -1083,7 +1091,18 @@ async function openMatch(fid){
     detail = cached; // instant — no API call
   } else {
     const persisted = !cached ? lsGet('banits_fx_'+fid) : null; // only worth checking on a cold cache — a stale in-memory entry means we're about to refetch anyway
-    if(persisted && isFinal(persisted?.response?.[0]?.fixture?.status?.short)){
+    const persistedFx = persisted?.response?.[0];
+    // 2026-08-27 (follow-up): also re-validate hasUsableLineups() here, not
+    // just isFinal() — cacheFixtureDetail() (the write side, below) has
+    // refused to persist a final match with broken lineup data ever since
+    // that fix shipped, but this READ side previously didn't re-check it, so
+    // an entry written to localStorage BEFORE the fix existed (or by KV/edge
+    // cache poisoning further upstream) would keep loading "instantly" from
+    // disk forever with no way to self-heal — clearing the Worker's KV or
+    // even the edge cache does nothing for data already sitting in THIS
+    // browser's localStorage. This check is what lets a stale/broken entry
+    // fall through to `else` and trigger a real re-fetch instead.
+    if(persisted && isFinal(persistedFx?.fixture?.status?.short) && hasUsableLineups(persistedFx)){
       detail = persisted;
       _fixtureDetailCache.set(fid, detail); // warm the in-memory cache too
     } else {
