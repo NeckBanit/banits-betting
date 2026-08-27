@@ -55,6 +55,39 @@
      the body background-image below. */
   --glass:rgba(15,23,41,.68);--glass-border:rgba(148,163,184,.14);
 }
+
+/* ── LIGHT MODE (Phase 4, 2026-08-27) ──────────────────────────
+   Overrides only the surface/text/border/glass tokens above — the file's
+   own comment on the 2026-08-25 dark refresh notes 500+ rules already
+   consume these token NAMES, so a values-only override here reskins the
+   entire app with no selector-by-selector work. Brand colours (gold/
+   cobalt/high/med/low/etc.) are kept as-is: they're accents/borders/icons
+   almost everywhere, not body text, so they read fine on a light surface
+   too and stay the one constant between themes.
+   Applied via [data-theme="light"] on <html>, toggled + persisted by
+   toggleTheme()/initTheme() in banits.js. No selector below this point
+   needed to change — this is the whole light theme. */
+:root[data-theme="light"]{
+  --bg:#F3F5FB;--card:#FFFFFF;--card2:#F1F4FA;--card3:#E6EAF4;
+  --border:rgba(15,23,42,.11);--border2:rgba(15,23,42,.20);
+  --text:#0B1220;--muted:#48567A;--dim:#5E6D93;
+  --glass:rgba(255,255,255,.72);--glass-border:rgba(15,23,42,.10);
+}
+:root[data-theme="light"] body{
+  background:
+    radial-gradient(1100px 620px at 12% -8%,rgba(26,111,224,.07),transparent 60%),
+    radial-gradient(800px 480px at 100% 0%,rgba(240,179,35,.06),transparent 55%),
+    var(--bg);
+}
+/* Scrollbar thumbs are hardcoded translucent-white (built for the dark
+   surfaces above) — invisible against a light surface, so they need their
+   own light-mode value rather than inheriting a token. */
+:root[data-theme="light"] #sb-list::-webkit-scrollbar-thumb,
+:root[data-theme="light"] #landing::-webkit-scrollbar-thumb,
+:root[data-theme="light"] .lp-results-col::-webkit-scrollbar-thumb,
+:root[data-theme="light"] .tab-pnl::-webkit-scrollbar-thumb{
+  background:rgba(15,23,42,.18);
+}
 html,body{height:100%;overflow:hidden;color:var(--text);font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.4;font-variant-numeric:tabular-nums}
 body{
   background:
@@ -72,11 +105,28 @@ body{
    every tap/click-driven navigation, which is the overwhelmingly common case. */
 #landing:focus,#mv:focus,#lg:focus,#clubsearch:focus,#club:focus{outline:none}
 
+/* Phase 4 a11y pass (2026-08-27): only 4 :focus rules existed in the whole
+   file before this, none covering the many role="button" cards/rows
+   (fixture cards, league/club rows, the hamburger, tab buttons, the
+   favourite star, etc.) — keyboard users tabbing through the app had no
+   visible indicator of where focus was. :focus-visible (not :focus) so a
+   mouse/tap click never shows a ring, only real keyboard navigation.
+   An inset box-shadow, not outline, so the ring is never clipped by an
+   ancestor's overflow:hidden/overflow-x:hidden (the sidebar list and
+   several scrollable panels both use it) — an outline renders outside the
+   border box and CAN be clipped there, an inset shadow never is. */
+[role="button"]:focus-visible,
+button:focus-visible,
+a:focus-visible{
+  outline:none;
+  box-shadow:inset 0 0 0 2px var(--gold);
+}
+
 /* ─── SIDEBAR ─────────────────────────────────────────────── */
 #sb{width:245px;flex-shrink:0;background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-right:1px solid var(--glass-border);display:flex;flex-direction:column;overflow:hidden}
 .sb-hd{position:relative;padding:14px 13px 10px;border-bottom:1px solid var(--border);flex-shrink:0}
 .sb-hd::after{content:'';position:absolute;bottom:-1px;left:0;width:100%;height:2px;background:var(--wc-gradient)}
-.sb-logo{font-family:var(--cond);font-size:20px;font-weight:900;letter-spacing:.07em;text-transform:uppercase;display:flex;align-items:center;gap:8px;cursor:pointer;transition:opacity .15s;user-select:none;background:linear-gradient(90deg,#EEF2FF 30%,var(--gold) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.sb-logo{font-family:var(--cond);font-size:20px;font-weight:900;letter-spacing:.07em;text-transform:uppercase;display:flex;align-items:center;gap:8px;cursor:pointer;transition:opacity .15s;user-select:none;background:linear-gradient(90deg,var(--text) 30%,var(--gold) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .sb-logo:hover{opacity:.8}
 .sb-logo i{color:var(--cobalt);font-size:22px;-webkit-text-fill-color:var(--cobalt);flex-shrink:0}
 .sb-logo small{font-size:9px;letter-spacing:.05em;color:var(--dim);font-weight:400;text-transform:none;align-self:flex-end;margin-bottom:2px;-webkit-text-fill-color:var(--dim);background:none}
@@ -175,7 +225,7 @@ body{
 .lp-hero-stats{display:flex;gap:22px;flex-shrink:0}
 .lp-hstat{text-align:center}
 .lp-hstat-n{font-family:var(--mono);font-size:22px;font-weight:700;line-height:1}
-.lp-hstat-l{font-size:8px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-top:4px}
+.lp-hstat-l{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-top:4px}
 
 /* ─── LIVE MATCH SPOTLIGHT ──────────────────────────────────────
    A featured banner for the day's live match — FotMob/BBC Sport/most
@@ -256,7 +306,14 @@ body{
 .mv-hdr{position:relative;background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-bottom:1px solid var(--glass-border);padding:14px 22px;flex-shrink:0;box-shadow:var(--shadow-1)}
 .mv-hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
 .chip-wc{background:linear-gradient(90deg,rgba(255,199,44,.18),rgba(25,211,142,.18));color:var(--gold);border:1px solid rgba(255,199,44,.35);font-weight:800}
-.mh-comp{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.mh-comp{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;row-gap:6px}
+/* Phase 4 (2026-08-27): Back, Menu, competition label, kickoff/live chip and
+   Share all collided/wrapped mid-word at ~390px. flex-wrap above lets the
+   row break onto a 2nd line instead of overflowing; this span independently
+   truncates the competition name with an ellipsis before it gets to that
+   point, so the common case (a long league name, not literally no room at
+   all) resolves without needing 2 lines in the first place. */
+.mh-comp-lg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1}
 .mh-scores{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:6px}
 /* min-width:0 on both — grid items default to min-width:auto, which sizes
    to their content's min-content width. .mh-top-row's fixed 48px badge
@@ -284,7 +341,17 @@ body{
 .chip-af{background:rgba(58,98,204,.1);color:var(--violet);border:1px solid rgba(58,98,204,.25)}
 
 /* ─── TABS ── FIX: hide the scrollbar on the tab-nav row ───── */
-.tab-nav{display:flex;border-bottom:1px solid var(--glass-border);background:var(--glass);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);flex-shrink:0;padding:0 16px;gap:0;overflow-x:auto;scrollbar-width:none;position:relative;z-index:2}
+.tab-nav{display:flex;border-bottom:1px solid var(--glass-border);background:var(--glass);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);flex-shrink:0;padding:0 16px;gap:0;overflow-x:auto;scrollbar-width:none;position:relative;z-index:2;
+  /* Scroll-edge affordance (Phase 4, 2026-08-27): on mobile the match
+     view's 7 tabs and the Leagues view's 9 tabs both overflow with zero
+     visual hint there's more to swipe to — "Top Picks"/"Predictions" were
+     fully off-screen with no cue they existed. A mask-image taper on both
+     edges reads as "this scrolls" without a hard-edged fade box; harmless
+     on a viewport where everything already fits (just a subtle few-px
+     taper on the outermost tabs), so no need to gate it on overflow state. */
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 14px,#000 calc(100% - 14px),transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 14px,#000 calc(100% - 14px),transparent);
+}
 .tab-nav::-webkit-scrollbar{display:none}
 .tab-btn{padding:10px 13px;font-size:11px;font-weight:600;letter-spacing:.03em;color:var(--dim);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .16s,border-color .16s,background .16s;white-space:nowrap;border-radius:var(--r-sm) var(--r-sm) 0 0}
 .tab-btn:hover{color:var(--muted);background:rgba(255,255,255,.03)}
@@ -304,8 +371,6 @@ body{
   .mv-hdr>div{max-width:1200px;margin:0 auto}
   /* Analysis two-col wider gap */
   .two-col{gap:28px}
-  /* WC fixtures: more columns at wide widths */
-  .wc-fix-grid{grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
 }
 
 /* ─── SHARED COMPONENTS ─────────────────────────────────────── */
@@ -315,6 +380,12 @@ body{
 .no-data i{font-size:32px;display:block;margin-bottom:10px;color:var(--card2)}
 .no-data strong{color:var(--muted)}
 .ld-msg{color:var(--muted);font-size:12px;padding:30px;text-align:center;display:flex;align-items:center;justify-content:center;gap:10px;flex-direction:column}
+/* Unified error+retry state (Phase 4, 2026-08-27) — see errorRetryBlock()
+   in banits.js. One consistent shape for "this failed, here's why, retry"
+   everywhere it appears, instead of 3-4 different ad-hoc treatments. */
+.err-retry{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:30px 20px}
+.err-retry i{font-size:28px;color:var(--med)}
+.err-retry-msg{color:var(--muted);font-size:12px;line-height:1.7;max-width:440px}
 .ld-progress{width:220px;height:4px;background:var(--card2);border-radius:2px;overflow:hidden;margin-top:4px}
 .ld-progress-fill{height:100%;background:var(--cobalt);border-radius:2px;transition:width .25s ease}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px}
@@ -342,7 +413,11 @@ body{
 .ct-split-bars{display:flex;flex:1;height:8px;border-radius:4px;overflow:hidden;background:var(--card3)}
 .ct-split-bar{height:100%}
 .ct-split-1h{background:var(--violet)}
-.ct-split-2h{background:var(--gold)}
+/* Was var(--gold) — 2nd half is a neutral time category, not "the important
+   thing," which is what gold means everywhere else in the app (Phase 4,
+   2026-08-27). --low (green) reads clearly against 1H's blue without
+   borrowing the highlight color's meaning. */
+.ct-split-2h{background:var(--low)}
 .ct-split-nums{font-size:9px;color:var(--dim);font-family:var(--mono);flex-shrink:0;min-width:64px;text-align:right}
 
 /* ─── STAT BARS ───────────────────────────────────────────────── */
@@ -418,11 +493,15 @@ body{
 /* ─── TOP THREAT BANNER ─────────────────────────────────────── */
 .top-threat{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
 .tt-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;text-align:center;position:relative;overflow:hidden;box-shadow:var(--shadow-1)}
-.tt-label{font-size:8px;text-transform:uppercase;letter-spacing:.07em;font-weight:700;margin-bottom:3px}
+.tt-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;font-weight:700;margin-bottom:3px}
 .tt-name{font-size:12px;font-weight:800;color:var(--text);margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tt-pct{font-size:26px;font-weight:900;font-family:var(--cond);color:var(--gold);line-height:1.1}
 .tt-pct.hi{color:var(--high)}.tt-pct.md{color:var(--med)}.tt-pct.lo{color:var(--low)}
 .tt-sub{font-size:8px;color:var(--dim);margin-top:1px}
+/* ─── RISK-TIER LEGEND (hi/md/lo probability colour key) ────── */
+.risk-legend{display:inline-flex;align-items:center;gap:8px;cursor:help}
+.risk-legend-item{display:inline-flex;align-items:center;gap:3px}
+.risk-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 /* ─── H2H SECTION ───────────────────────────────────────────── */
 .h2h-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:12px 14px;margin-bottom:14px;box-shadow:var(--shadow-1)}
 .h2h-row{display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(0,0,0,.2)}
@@ -453,7 +532,7 @@ body{
 /* ─── HEADER CONTEXT ROW ─────────────────────────────────── */
 .mh-ctx{display:flex;align-items:center;justify-content:space-between;padding:8px 0 0;gap:16px;flex-wrap:wrap}
 .mh-ctx-team{display:flex;align-items:center;gap:6px}
-.mh-ctx-label{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;min-width:20px}
+.mh-ctx-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;min-width:20px}
 /* ─── LEAGUE TABLE ───────────────────────────────────────── */
 .mini-table{background:var(--card2);border-radius:8px;overflow:hidden;border:1px solid var(--border);margin-top:8px;box-shadow:var(--shadow-1)}
 .mini-table-row{display:grid;grid-template-columns:22px 1fr 46px 36px 36px;align-items:center;padding:5px 10px;font-size:10px;gap:4px;border-bottom:1px solid rgba(0,0,0,.2);transition:background .12s}
@@ -466,13 +545,20 @@ body{
 .mt-gd{text-align:right;font-family:var(--mono);font-size:9px;color:var(--dim)}
 .mt-form{display:flex;gap:2px;justify-content:flex-end}
 .mt-fb{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+/* Phase 4 a11y pass (2026-08-27): form-guide pips are color-only signals
+   (WCAG 1.4.1 risk) at this tiny size — a distinct shape per result now
+   backs the color (W=circle, D=square/default, L=triangle), plus a
+   `title` + sr-only text on each pip (see formDot() in banits.js). */
+.mt-fb-w{border-radius:50%}
+.mt-fb-d{border-radius:2px}
+.mt-fb-l{border-radius:0;clip-path:polygon(50% 0%,0% 100%,100% 100%)}
 .mini-table-gap{text-align:center;color:var(--dim);padding:2px;font-size:11px}
 /* ─── CARD SUMMARY BANNER ────────────────────────────────── */
 .csb{display:flex;align-items:center;background:linear-gradient(135deg,rgba(0,71,181,.08),rgba(5,12,30,0));border:1px solid var(--border);border-radius:var(--r-md);padding:14px 18px;margin-bottom:14px;gap:8px;box-shadow:var(--shadow-1)}
 .csb-team{flex:1;text-align:center;min-width:0}
 .csb-nm{font-size:10px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
 .csb-num{font-size:30px;font-weight:900;font-family:var(--cond);line-height:1;letter-spacing:-.02em}
-.csb-lbl{font-size:8px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin-top:2px}
+.csb-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin-top:2px}
 .csb-mid{display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0;padding:0 6px}
 .csb-mid-ico{font-size:18px}
 .csb-mid-txt{font-size:8px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
@@ -577,7 +663,7 @@ body{
 .sa-ex-warn{font-size:11px;color:var(--med);margin-top:8px;padding:7px 10px;background:rgba(232,135,30,.07);border-radius:5px;border-left:2px solid var(--med);line-height:1.6}
 .sa-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px}
 .sa-nm{font-size:12px;font-weight:600}
-.sa-pos-badge{font-size:8px;color:var(--dim);background:rgba(255,255,255,.06);padding:1px 4px;border-radius:3px;margin-left:5px;letter-spacing:.04em;font-weight:700}
+.sa-pos-badge{font-size:10px;color:var(--dim);background:rgba(255,255,255,.06);padding:1px 4px;border-radius:3px;margin-left:5px;letter-spacing:.04em;font-weight:700}
 .sa-pct{font-family:var(--mono);font-size:18px;font-weight:800;flex-shrink:0}
 .sa-pct.hi{color:var(--high)}.sa-pct.md{color:var(--med)}.sa-pct.lo{color:var(--low)}
 .sa-bar{height:4px;background:rgba(255,255,255,.09);border-radius:2px;margin-bottom:6px;overflow:hidden}
@@ -585,6 +671,8 @@ body{
 .sa-meta{display:flex;gap:10px;font-size:11px;color:var(--dim);flex-wrap:wrap}
 .sa-meta b{color:var(--muted);font-family:var(--mono);font-size:11px;font-weight:700}
 .tip-box{background:rgba(58,98,204,.08);border:1px solid rgba(58,98,204,.2);border-radius:8px;padding:11px 14px;margin-bottom:14px;font-size:11px;color:var(--muted);line-height:1.7}
+.lp-intro-close{position:absolute;top:8px;right:8px;background:transparent;border:none;color:var(--dim);cursor:pointer;font-size:13px;line-height:1;padding:6px;border-radius:4px;transition:color .14s,background .14s}
+.lp-intro-close:hover{color:var(--text);background:rgba(255,255,255,.06)}
 .tip-box code{color:var(--low);font-family:var(--mono)}
 
 /* ─── POSITION COLOUR BADGES (FWD=red, MID=green, DEF=blue, GK=yellow) ──── */
@@ -603,7 +691,7 @@ body{
 .mu-side-r{text-align:right}
 .mu-role{font-size:8px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:700;margin-bottom:2px}
 .mu-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mu-pos{font-size:8px;padding:1px 4px;border-radius:3px;display:inline-block;margin-top:2px;letter-spacing:.04em;font-weight:700}
+.mu-pos{font-size:10px;padding:1px 4px;border-radius:3px;display:inline-block;margin-top:2px;letter-spacing:.04em;font-weight:700}
 .mu-stat-row{display:flex;gap:8px;font-size:10px;color:var(--dim);margin-top:5px;flex-wrap:wrap}
 .mu-side-r .mu-stat-row{justify-content:flex-end}
 .mu-stat-row b{color:var(--muted);font-family:var(--mono);font-weight:400;font-size:11px}
@@ -621,13 +709,17 @@ body{
 .tp-row-top{display:flex;align-items:center;gap:10px}
 .tp-rank{font-family:var(--mono);font-size:11px;color:var(--dim);font-weight:700;flex-shrink:0;width:22px}
 .tp-photo{width:32px;height:32px;border-radius:50%;object-fit:cover;flex-shrink:0;background:var(--card3);border:1px solid var(--border2)}
+/* Booking-pick rows wrap .tp-photo in the same .sa-avatar-ring used by the
+   Analysis tab (Phase 4, 2026-08-27) — shrink to match the ring's inner slot. */
+.sa-avatar-ring .tp-photo{width:30px;height:30px;border:none}
+.tp-photo-ph{display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--text);background:rgba(0,71,181,.15)}
 .tp-info{flex:1;min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .tp-name{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
-.tp-pos{font-size:8px;padding:1px 5px;border-radius:3px;letter-spacing:.04em;text-align:center;font-weight:700;flex-shrink:0}
+.tp-pos{font-size:10px;padding:1px 5px;border-radius:3px;letter-spacing:.04em;text-align:center;font-weight:700;flex-shrink:0}
 .tp-team-lbl{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tp-pct{font-family:var(--mono);font-size:18px;font-weight:800;text-align:right;flex-shrink:0}
 .tp-pct.hi{color:var(--high)}.tp-pct.md{color:var(--med)}.tp-pct.lo{color:var(--low)}
-.tp-meta{font-size:11px;color:var(--dim);display:flex;gap:12px;flex-wrap:wrap;padding-left:42px}
+.tp-meta{font-size:11px;color:var(--dim);display:flex;gap:12px;flex-wrap:wrap;padding-left:46px}
 .tp-meta b{color:var(--muted);font-family:var(--mono);font-weight:700;font-size:11px}
 .tp-meta .tp-src{color:var(--dim);margin-left:auto}
 
@@ -644,35 +736,6 @@ body{
   .tp-foul-hdr span:nth-child(4),.tp-foul-hdr span:nth-child(5),
   .tp-foul-row .tp-pos,.tp-foul-row .tp-team-lbl,.tp-foul-row .tp-fc{display:none}
 }
-
-/* ─── WC TOP SCORERS ───────────────────────────────────────── */
-.wcs-wrap{max-width:900px}
-.wcs-hdr{display:grid;grid-template-columns:38px 32px 1fr 1fr 40px 36px 36px 44px;gap:8px;padding:4px 12px 6px;font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:700;border-bottom:1px solid var(--border);margin-bottom:6px}
-.wcs-row{display:grid;grid-template-columns:38px 32px 1fr 1fr 40px 36px 36px 44px;gap:8px;align-items:center;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;margin-bottom:5px;transition:border-color .15s}
-.wcs-row:hover{border-color:var(--border2)}
-.wcs-row.wcs-top{border-color:rgba(240,179,35,.3);background:rgba(240,179,35,.04)}
-.wcs-rank{font-size:13px;text-align:center}
-.wcs-photo{width:28px;height:28px;border-radius:50%;object-fit:cover;display:block}
-.wcs-nophoto{width:28px;height:28px;border-radius:50%;background:var(--card3);display:block}
-.wcs-name{min-width:0;display:flex;flex-direction:column;gap:3px}
-.wcs-pname{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wcs-bar{height:3px;background:var(--card3);border-radius:2px;overflow:hidden}
-.wcs-bar span{display:block;height:100%;border-radius:2px}
-.wcs-team{font-size:10px;display:flex;align-items:center;gap:5px;overflow:hidden;white-space:nowrap}
-.wcs-stat{font-family:var(--mono);font-size:12px;text-align:center;color:var(--muted)}
-.wcs-goals{font-family:var(--mono);font-size:16px;font-weight:800;text-align:center;color:var(--gold)}
-.wcs-ast{color:var(--dim)}
-.wcs-ga{color:var(--cobalt-text);font-weight:700}
-@media(max-width:800px){
-  .wcs-hdr,.wcs-row{grid-template-columns:32px 32px 1fr 36px 36px}
-  .wcs-team,.wcs-stat:nth-child(5),.wcs-ast{display:none}
-}
-
-/* ─── WC TOURNAMENT TREE ───────────────────────────────────── */
-.bt-outer{width:100%}
-.bt-scroll{overflow-x:auto;overflow-y:visible;padding:4px 0 16px;scrollbar-width:thin;scrollbar-color:rgba(0,71,181,.3) transparent}
-.bt-scroll::-webkit-scrollbar{height:4px}
-.bt-scroll::-webkit-scrollbar-thumb{background:rgba(0,71,181,.3);border-radius:2px}
 /* Match card (absolute positioning within SVG overlay) */
 .btc{position:absolute;background:var(--card2);border:1px solid var(--border);border-radius:7px;cursor:pointer;overflow:hidden;transition:border-color .15s;display:flex;flex-direction:column}
 .btc:hover{border-color:var(--cobalt)}
@@ -687,8 +750,6 @@ body{
 .btc-s.btc-sw{color:var(--gold)}
 .btc-d{height:1px;background:var(--border);flex-shrink:0}
 .btc-hdr{position:absolute;top:0;font-size:8px;text-transform:uppercase;letter-spacing:.07em;color:var(--cobalt-text);font-weight:700;text-align:center;user-select:none}
-.bt-third-sec{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);max-width:300px}
-.bt-circle-outer{padding:12px 0;display:flex;justify-content:center}
 
 
 
@@ -734,10 +795,9 @@ body{
    sheen, the same "glassy button" gloss most odds/price UI uses to read as
    tappable rather than a flat progress bar. Pure decoration, ::after so it
    never affects the bar's actual layout/width math above it. */
-.pred-bar{position:relative;overflow:hidden}
-.pred-bar::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,0) 55%);pointer-events:none}
 .pred-teams{display:flex;justify-content:space-between;font-size:12px;font-weight:600;margin-bottom:9px}
-.pred-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;gap:2px}
+.pred-bar{position:relative;display:flex;height:8px;border-radius:4px;overflow:hidden;gap:2px}
+.pred-bar::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,0) 55%);pointer-events:none}
 .pred-pcts{display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-top:6px}
 .pred-winner{background:rgba(0,184,118,.08);border:1px solid rgba(0,184,118,.2);border-radius:8px;padding:11px 11px 11px 16px;margin-bottom:12px;text-align:center;position:relative;overflow:hidden}
 /* Gold-on-green left accent bar — the "this is the headline call" marker,
@@ -766,8 +826,10 @@ body{
 .sb-home-btn{display:none;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);transition:all .14s}
 .sb-home-btn:hover{background:rgba(255,199,44,.06);color:var(--gold)}
 .sb-home-btn i{color:var(--gold)}
-/* Show the sidebar home button only on mobile */
-@media(max-width:600px){.sb-home-btn{display:flex}}
+/* Was shown on mobile too (≤600px) until Phase 4 (2026-08-27) — now hidden
+   there instead: the bottom nav already gives one-tap access to Fixtures on
+   mobile, so a second identical entry inside the drawer was pure redundancy
+   (see the ≤600px block below for the matching .sb-nav-btn hide). */
 
 /* ─── LEAGUES (STANDINGS) VIEW ─────────────────────────────── */
 .sb-nav-btn{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);transition:all .14s}
@@ -837,94 +899,6 @@ body{
   .club-hero-watermark{width:150px;height:150px;top:-10%}
 }
 
-.wc-hdr{position:relative;background:var(--card);border-bottom:1px solid var(--border);padding:14px 22px;flex-shrink:0}
-.wc-hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--wc-gradient)}
-.wc-hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-.wc-title{font-family:var(--cond);font-size:24px;font-weight:900;letter-spacing:.04em;display:flex;align-items:center;gap:10px}
-.wc-title i{color:var(--gold)}
-.wc-subtitle{font-size:10px;color:var(--dim);margin-top:3px;letter-spacing:.04em}
-.wc-countdown{text-align:right}
-.wc-countdown-n{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--gold);line-height:1}
-.wc-countdown-l{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-top:3px}
-.wc-nav{display:flex;gap:0;border-bottom:1px solid var(--border);background:var(--card);flex-shrink:0;padding:0 16px;scrollbar-width:none}
-.wc-nav::-webkit-scrollbar{display:none}
-.wc-nav-btn{padding:8px 14px;font-size:11px;font-weight:600;color:var(--dim);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .14s;white-space:nowrap}
-.wc-nav-btn:hover{color:var(--muted)}
-.wc-nav-btn.on{color:var(--gold);border-bottom-color:var(--gold)}
-.wc-body{flex:1;overflow-y:auto;padding:18px 22px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.1) transparent}
-.wc-body::-webkit-scrollbar{width:3px}
-.wc-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
-/* Group tables grid */
-.wc-groups-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
-.wc-group{background:var(--card2);border:1px solid var(--border);border-radius:10px;overflow:hidden}
-.wc-group-hd{padding:9px 12px;font-family:var(--cond);font-size:14px;font-weight:700;letter-spacing:.06em;background:rgba(255,255,255,.04);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-.wc-group-hd span{font-size:9px;color:var(--dim);font-weight:400;letter-spacing:.04em;font-family:system-ui}
-.wc-team-row{display:flex;align-items:center;gap:0;padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.04);font-size:11px}
-.wc-team-row:last-child{border-bottom:none}
-.wc-team-row.qual{background:rgba(0,184,118,.04)}
-.wc-team-row.maybe{background:rgba(240,179,35,.03)}
-.wc-pos{width:16px;color:var(--dim);font-size:10px;flex-shrink:0;font-family:var(--mono)}
-.wc-flag{font-size:14px;margin-right:7px;flex-shrink:0}
-.wc-tname{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wc-stat{width:22px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--dim);flex-shrink:0}
-.wc-stat.pts{color:var(--text);font-weight:700;font-size:11px;width:24px}
-.wc-stat-hd{color:var(--dim);font-size:9px}
-.wc-loading{text-align:center;padding:40px;color:var(--dim);font-size:12px}
-/* Fixture list for WC */
-.wc-date-group{margin-bottom:20px}
-.wc-date-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);font-weight:700;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
-.wc-fix-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:7px}
-.wc-fix-card{background:var(--card2);border:1px solid var(--border);border-radius:9px;padding:11px 13px;cursor:pointer;transition:all .15s;border-left:3px solid transparent}
-.wc-fix-card:hover{background:var(--card3);border-color:var(--border2);transform:translateY(-1px)}
-.wc-fix-card.wfc-live{border-left-color:var(--high);background:rgba(212,21,21,.05)}
-.wc-fix-card.wfc-ft{opacity:.7}
-
-/* ─── WC FIXTURES TWO-COLUMN LAYOUT ─────────────────────────── */
-.wc-fx-body{display:flex;gap:18px;align-items:flex-start;width:100%}
-.wc-fx-upcoming{flex:1;min-width:0}
-.wc-fx-results{width:280px;flex-shrink:0;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;position:sticky;top:0;max-height:calc(100vh - 200px);overflow-y:auto}
-.wc-fx-results::-webkit-scrollbar{width:3px}
-.wc-fx-results::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
-.wc-res-hd{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px}
-.wc-res-card{background:var(--card2);border:1px solid var(--border);border-radius:7px;padding:9px 11px;margin-bottom:7px;cursor:pointer;transition:border-color .15s}
-.wc-res-card:hover{border-color:var(--border2)}
-.wc-res-teams{display:flex;align-items:center;gap:6px;margin-bottom:3px}
-.wc-res-tm{font-size:10px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:4px}
-.wc-res-tm.away{justify-content:flex-end;text-align:right}
-.wc-res-sc{font-family:var(--mono);font-size:13px;font-weight:800;flex-shrink:0;min-width:36px;text-align:center;color:var(--text)}
-.wc-res-meta{font-size:9px;color:var(--dim);display:flex;justify-content:space-between}
-.wc-res-events{margin-top:5px;padding-top:5px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:2px}
-.wc-res-ev{font-size:9px;color:var(--muted);display:flex;align-items:center;gap:4px;line-height:1.3}
-.wc-res-ev.away{justify-content:flex-end;text-align:right}
-.wc-res-ev b{font-family:var(--mono);color:var(--dim);font-weight:700;font-size:8px}
-@media(max-width:900px){
-  .wc-fx-body{flex-direction:column}
-  .wc-fx-results{width:100%;position:static;max-height:none;order:-1}
-}
-.wc-fix-teams{display:flex;align-items:center;gap:7px;margin-bottom:5px}
-.wc-fix-tm{font-size:11px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wc-fix-tm.away{text-align:right}
-.wc-fix-sc{font-family:var(--mono);font-size:12px;font-weight:700;flex-shrink:0;min-width:30px;text-align:center}
-.wc-fix-meta{font-size:9px;color:var(--dim);display:flex;justify-content:space-between}
-
-/* ─── WC PREDICTIONS ───────────────────────────────────────────── */
-.wcp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
-.wcp-card{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:13px 15px}
-.wcp-hdr{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.wcp-tm{font-size:12px;font-weight:600;flex:1;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wcp-tm.away{justify-content:flex-end}
-.wcp-vs{font-size:10px;color:var(--dim);font-family:var(--mono);flex-shrink:0}
-.wcp-winner{font-size:11px;color:var(--text);background:rgba(255,199,44,.08);border:1px solid rgba(255,199,44,.25);border-radius:6px;padding:6px 9px;margin-bottom:4px}
-.wcp-advice{font-size:11px;color:var(--muted);margin-top:6px;font-style:italic}
-.wcp-goals{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--dim);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
-.wcp-goals b{font-family:var(--mono);font-size:14px}
-.wcp-comp{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
-.wcp-comp-ttl{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700;margin-bottom:6px}
-.wcp-comp-row{display:grid;grid-template-columns:32px 1fr 32px 70px;gap:6px;align-items:center;font-size:9px;color:var(--dim);margin-bottom:4px}
-.wcp-comp-val{font-family:var(--mono);font-weight:700;text-align:center}
-.wcp-comp-bar{display:flex;height:5px;border-radius:3px;overflow:hidden}
-.wcp-comp-lbl{text-align:right}
-
 /* ═══════════════════════════════════════════════════════════════
    RESPONSIVE LAYOUT SYSTEM
    ─────────────────────────────────────────────────────────────
@@ -940,11 +914,6 @@ body{
   .lp-results-col{width:360px}
   .sa-grid{grid-template-columns:1fr 1fr;gap:24px}
   .mu-grid{grid-template-columns:1fr 1fr;gap:20px}
-  .wcp-grid{grid-template-columns:repeat(4,1fr)}
-  .wc-groups-grid{grid-template-columns:repeat(4,1fr)}
-}
-
-@media(max-width:1200px){
 }
 @media(max-width:1024px){
   #sb{width:210px}
@@ -952,9 +921,19 @@ body{
   .lp-results-col{width:100%;position:static;max-height:none;order:-1}
   .two-col{grid-template-columns:1fr!important}
   .mu-grid{grid-template-columns:1fr!important}
-  .wcp-grid{grid-template-columns:1fr 1fr}
-  .wc-groups-grid{grid-template-columns:repeat(3,1fr)}
   .pitch-grid{grid-template-columns:1fr!important}
+
+  /* Touch targets — several controls sit well under the ~44px minimum
+     recommended for touch (WCAG 2.5.5 / platform HIG guidance). Was scoped
+     to <=600px only (2026-08-25); moved up to the full <=1024px tablet band
+     (Phase 4, 2026-08-27) — a 600-1024px viewport is overwhelmingly a touch
+     tablet, not a mouse-driven desktop, so it deserves the same treatment.
+     Desktop (>1024px) keeps its tighter, mouse-appropriate density. */
+  .tab-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .sb-date-nav button{min-height:44px}
+  .stog-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center;padding:3px 12px}
+  .btn-back{height:44px}
+  .pitch-stat-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
 }
 
 /* C. Mobile — sidebar becomes drawer, everything stacks */
@@ -987,13 +966,18 @@ body{
      content container gets a tighter mobile override except this one, which
      was eating a disproportionate chunk of a ~375px viewport's width. */
   .lp-body{padding:12px 14px}
-  .wcp-grid{grid-template-columns:1fr}
-  .wc-groups-grid{grid-template-columns:1fr 1fr}
   .tp-foul-hdr,.tp-foul-row{grid-template-columns:24px 24px 1fr 50px 50px 50px}
   .tp-foul-hdr span:nth-child(4),.tp-foul-row .tp-team-lbl{display:none}
   .mu-card{grid-template-columns:1fr 32px 1fr}
   .lp-grid{grid-template-columns:1fr}
   .pitch-grid{grid-template-columns:1fr!important}
+  /* Phase 4 (2026-08-27): 128% padding-top against a near-full-width mobile
+     column renders a genuinely tall pitch — combined with the header/tab
+     bar above it, only the goalkeeper marker was visible before scrolling.
+     Reduced just on mobile, where the column is widest relative to the
+     viewport; desktop/tablet's narrower multi-column layout keeps the
+     taller ratio since it isn't the problem there. */
+  .pitch{padding-top:100%}
 
   /* Mobile bottom nav — one-tap access to Fixtures/Leagues/Menu instead of
      hamburger→drawer→tap. Glass bar pinned to the safe area. */
@@ -1026,12 +1010,10 @@ body{
   .tab-pnl{padding-bottom:calc(78px + env(safe-area-inset-bottom,0px))}
   .lg-body{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px))}
 
-  /* Touch targets — several controls sit well under the ~44px minimum
-     recommended for touch (WCAG 2.5.5 / platform HIG guidance). Scoped to
-     mobile only so desktop keeps its tighter, mouse-appropriate density. */
-  .tab-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
-  .sb-date-nav button{min-height:44px}
-  .stog-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center;padding:3px 12px}
-  .btn-back{height:44px}
-  .pitch-stat-btn{min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  /* Mobile nav redundancy (Phase 4, 2026-08-27): the bottom nav already
+     covers Fixtures/Leagues/Search in one tap, so the sidebar drawer (opened
+     via the bottom nav's own Menu button) no longer needs to repeat them —
+     it keeps only the controls that ARE genuinely drawer-only: date nav,
+     season toggle, and the data-sources footer. */
+  .sb-home-btn,.sb-nav-btn{display:none}
 }

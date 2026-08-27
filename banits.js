@@ -129,6 +129,18 @@ const FB_COLS=['#60a5fa','#f87171','#34d399','#fbbf24','#a78bfa','#fb923c','#38b
 // with a falsy color. One shared implementation now.
 function h2r(hex,a){const r=(hex||'#0047b5').replace('#','').match(/.{2}/g)||['0','47','b5'];return`rgba(${r.map(x=>parseInt(x,16)).join(',')},${a})`;}
 
+// Shared 8px form-guide pip (Phase 4, 2026-08-27 a11y pass) — was previously
+// duplicated inline at 2 call sites, color-only (green/amber/red), a WCAG
+// 1.4.1 risk for colorblind users at this tiny size. Now also carries a
+// distinct SHAPE per result (circle/square/triangle) plus a `title` and an
+// sr-only text label, so the result never depends on color alone.
+function formDot(r){
+  const col = r==='W'?'#16a34a':r==='L'?'#dc2626':r==='D'?'#ca8a04':'transparent';
+  const shapeCls = r==='W'?'mt-fb-w':r==='L'?'mt-fb-l':r==='D'?'mt-fb-d':'';
+  const word = r==='W'?'Win':r==='L'?'Loss':r==='D'?'Draw':'Unknown';
+  return `<div class="mt-fb ${shapeCls}" style="background:${col}" title="${word}"><span class="sr-only">${word}</span></div>`;
+}
+
 function tinfo(name=''){
   const direct=TC[name]; if(direct)return direct;
   for(const[k,v]of Object.entries(TC)){if(name.includes(k)||k.includes(name))return v;}
@@ -378,6 +390,40 @@ let _favTeams = (()=>{
   catch(e){ return new Map(); }
 })();
 function _saveFavTeams(){ try{ localStorage.setItem('banits_fav_teams', JSON.stringify([..._favTeams])); }catch(e){} }
+
+// Light/dark theme (Phase 4, 2026-08-27) — the actual palette switch is a
+// single [data-theme="light"] CSS-variable override (see banits.css); this
+// just applies/persists the choice and keeps the two sidebar toggle buttons
+// and the mobile browser-chrome colour (<meta name="theme-color">) in sync.
+// The dark→light flash on load is avoided separately, by a tiny inline
+// script in banits-v2_70.html's <head> that sets the attribute before this
+// file even runs — this function's own documentElement.setAttribute call is
+// what makes clicking the toggle take effect immediately, that inline
+// script is what makes a *returning* light-mode user never see a flash.
+function applyTheme(theme){
+  document.documentElement.setAttribute('data-theme', theme);
+  document.getElementById('theme-dark-btn')?.classList.toggle('on', theme==='dark');
+  document.getElementById('theme-light-btn')?.classList.toggle('on', theme==='light');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme==='light'?'#F3F5FB':'#02091C');
+}
+function setTheme(theme){
+  applyTheme(theme);
+  try{ localStorage.setItem('banits_theme', theme); }catch(e){}
+}
+function initTheme(){
+  let theme='dark';
+  try{ theme = localStorage.getItem('banits_theme')==='light' ? 'light' : 'dark'; }catch(e){}
+  applyTheme(theme);
+}
+
+// First-run landing-page explainer (Phase 4, 2026-08-27) — dismiss = "never
+// show again," same one-flag-forever pattern as the season-mode/fav-teams
+// localStorage above.
+function dismissIntro(){
+  try{ localStorage.setItem('banits_seen_intro','1'); }catch(e){}
+  const el=document.getElementById('lp-intro');
+  if(el) el.remove();
+}
 function toggleFavTeam(id, name){
   if(!id) return;
   if(_favTeams.has(id)) _favTeams.delete(id); else _favTeams.set(id, name||'');
@@ -397,7 +443,8 @@ function favStarBtn(teamId, teamName){
   if(!teamId) return '';
   const isFav = _favTeams.has(teamId);
   const safeName = (teamName||'').replace(/'/g,"\\'");
-  return `<i class="ti ${isFav?'ti-star-filled':'ti-star'} fav-star${isFav?' on':''}" onclick="event.stopPropagation();toggleFavTeam(${teamId},'${safeName}')" title="${isFav?'Remove from your teams':'Add to your teams'}" role="button" tabindex="0" onkeydown="_kbActivate(event)"></i>`;
+  const favLabel = isFav?`Remove ${teamName||'this team'} from your teams`:`Add ${teamName||'this team'} to your teams`;
+  return `<i class="ti ${isFav?'ti-star-filled':'ti-star'} fav-star${isFav?' on':''}" onclick="event.stopPropagation();toggleFavTeam(${teamId},'${safeName}')" title="${favLabel}" aria-label="${favLabel}" role="button" tabindex="0" onkeydown="_kbActivate(event)"></i>`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -512,8 +559,25 @@ function afFailureMessage(prefix, err){
 // Shared "Retry" button markup for failure states.
 function retryBtn(label, onclickCode){
   return`<button onclick="${onclickCode}" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);font-size:11px;padding:7px 16px;border-radius:6px;cursor:pointer;margin-top:10px">
-    <i class="ti ti-refresh" style="font-size:11px;margin-right:4px"></i>${label}
+    <i aria-hidden="true" class="ti ti-refresh" style="font-size:11px;margin-right:4px"></i>${label}
   </button>`;
+}
+
+// Unified error+retry visual component (Phase 4, 2026-08-27) — the same
+// "request failed, retry" state previously rendered via 4 different ad-hoc
+// markup shapes (.lp-empty on the landing page, plain .no-data with no icon
+// on the sidebar, .ld-msg on the match view, .no-data with an inline-styled
+// icon on the rate-limit messages), reading as several different kinds of
+// "broken" instead of one coherent, recognizable error pattern. `message`
+// can be any HTML string (a plain failure reason, or a longer diagnostic
+// with extra context/detail lines) — only the icon+button chrome around it
+// is standardized.
+function errorRetryBlock(message, retryOnclick, retryLabel){
+  return `<div class="err-retry">
+    <i aria-hidden="true" class="ti ti-alert-triangle"></i>
+    <div class="err-retry-msg">${message}</div>
+    ${retryBtn(retryLabel||'Retry', retryOnclick)}
+  </div>`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -904,7 +968,7 @@ async function updateCalibrationCheck(fx){
   const diffPct = Math.round((modelTotal - baseline.avgCards)/baseline.avgCards*100);
   const withinRange = Math.abs(diffPct) <= 25;
   el2.innerHTML = `<div class="calib-box${withinRange?'':' calib-box-warn'}">
-    <div class="calib-hd"><i class="ti ti-chart-dots" style="font-size:10px"></i> Model self-check <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— not a predictive-accuracy backtest, see note</span></div>
+    <div class="calib-hd"><i aria-hidden="true" class="ti ti-chart-dots" style="font-size:10px"></i> Model self-check <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— not a predictive-accuracy backtest, see note</span></div>
     <div class="calib-row">This match's model total (<b>${modelTotal.toFixed(1)}</b>) vs this league's actual average of <b>${baseline.avgCards.toFixed(1)}</b> cards/match (last ${baseline.sample} finished matches) — ${diffPct>=0?'+':''}${diffPct}% ${withinRange?'· within a plausible range':'· notably outside the recent league range, worth a sanity check'}.</div>
   </div>`;
 }
@@ -955,7 +1019,7 @@ async function loadFixtures(){
         // afFailureMessage fall back to the shared _lastAfError global, which
         // an unrelated concurrent call could have overwritten by now.
         _landingErrMsg = afFailureMessage('Failed to load fixtures', error);
-        list.innerHTML = `<div class="no-data">${_landingErrMsg}<br>${retryBtn('Retry', 'loadFixtures()')}</div>`;
+        list.innerHTML = errorRetryBlock(_landingErrMsg, 'loadFixtures()');
       }
       renderLanding();return;
     }
@@ -968,7 +1032,7 @@ async function loadFixtures(){
     _fixturesFetchDone = true;
     _fixturesCache = [];
     _landingErrMsg = `Failed to load fixtures — unexpected error (${err.message}). Wait a moment and try again.`;
-    list.innerHTML = `<div class="no-data">${_landingErrMsg}<br>${retryBtn('Retry', 'loadFixtures()')}</div>`;
+    list.innerHTML = errorRetryBlock(_landingErrMsg, 'loadFixtures()');
     renderLanding();
   }
 }
@@ -1153,7 +1217,7 @@ async function openMatch(fid){
   // match's already-rendered view with this stale one. Same guard pattern
   // as loadLeagueStandings() uses for the Leagues tab.
   if(_activeId!==fid)return;
-  if(!fx){document.getElementById('mv-hdr').innerHTML=`<div class="ld-msg" style="color:var(--high)">${afFailureMessage('Failed to load fixture', detailErr)}<br>${retryBtn('Retry', `openMatch(${fid})`)}</div>`;return;}
+  if(!fx){document.getElementById('mv-hdr').innerHTML=errorRetryBlock(afFailureMessage('Failed to load fixture', detailErr), `openMatch(${fid})`);return;}
 
   const ht=tinfo(fx.teams.home.name);
   const at=tinfo(fx.teams.away.name);
@@ -1396,7 +1460,7 @@ async function loadMatchContext(fx,ht,at){
       const isH=t.team.id===hId, isA=t.team.id===aId;
       const col=isH?ht.c:isA?at.c:'';
       const recentForm=(t.form||'').slice(-5).split('');
-      const formDots=recentForm.map(r=>`<div class="mt-fb" style="background:${r==='W'?'#16a34a':r==='L'?'#dc2626':'#ca8a04'}"></div>`).join('');
+      const formDots=recentForm.map(formDot).join('');
       tbl+=`<div class="mini-table-row${isH||isA?' hl':''}" style="${col?'border-left:3px solid '+col+';':''}" title="${t.team.name} — ${t.points}pts, GD ${t.goalsDiff>=0?'+':''}${t.goalsDiff}">
         <span class="mt-pos">${t.rank}</span>
         <span class="mt-team" style="${col?'color:'+col:''}font-weight:${isH||isA?800:400}">${t.team.name}</span>
@@ -1412,7 +1476,7 @@ async function loadMatchContext(fx,ht,at){
     if(stEl) stEl.innerHTML=tbl;
   } else if(!isIntl){
     const stEl=document.getElementById('ctx-standings');
-    if(stEl) stEl.innerHTML=`<div style="color:var(--dim);font-size:11px;padding:4px 0">Standings available after season start</div>`;
+    if(stEl) stEl.innerHTML=`<div class="no-data" style="padding:14px"><i aria-hidden="true" class="ti ti-table-off"></i><strong>Standings available after season start</strong></div>`;
   }
 
   // ── Head-to-head history ──────────────────────────────────────
@@ -1453,7 +1517,7 @@ async function loadMatchContext(fx,ht,at){
     }).join('');
 
     h2hEl.innerHTML=`<div class="h2h-panel">
-      <div class="ctx-sec-hd"><i class="ti ti-arrows-exchange" style="font-size:11px"></i>Head to head (last ${matches.length})</div>
+      <div class="ctx-sec-hd"><i aria-hidden="true" class="ti ti-arrows-exchange" style="font-size:11px"></i>Head to head (last ${matches.length})</div>
       ${rows}
       <div class="h2h-summary">
         <div class="h2h-sum-col">
@@ -1478,15 +1542,12 @@ async function loadMatchContext(fx,ht,at){
 // quota, so this gives the user a clear explanation and a manual retry button
 // rather than the UI silently grinding for minutes.
 function buildRateLimitMessage(){
-  return`<div class="no-data" style="padding:40px 20px">
-    <i class="ti ti-alert-triangle" style="color:var(--med)"></i>
-    <strong style="color:var(--med)">Player stats could not be loaded</strong><br>
+  const msg = `<strong style="color:var(--med)">Player stats could not be loaded</strong><br>
     ${_callCount} API calls made this session. The player stats endpoint
     (<code>/players?id=X</code>) either exceeded the rate limit for your plan,
     or is not accessible from this browser context.<br><br>
-    <strong>Season queried: 2025/26</strong> — only the current season is attempted.<br><br>
-    ${retryBtn('Retry analysis', `resetBreaker();loadSeasonAnalysis(${_lastFx?.teams?.home?.id},${_lastFx?.teams?.away?.id},_lastFx,_lastHt,_lastAt)`)}
-  </div>`;
+    <strong>Season queried: 2025/26</strong> — only the current season is attempted.`;
+  return errorRetryBlock(msg, `resetBreaker();loadSeasonAnalysis(${_lastFx?.teams?.home?.id},${_lastFx?.teams?.away?.id},_lastFx,_lastHt,_lastAt)`, 'Retry analysis');
 }
 
 // Club-page equivalent of buildRateLimitMessage() — same breaker-tripped
@@ -1495,14 +1556,11 @@ function buildRateLimitMessage(){
 // tripping it here just rendered every squad player as generic "no data"
 // with no explanation and no way to retry.
 function buildClubRateLimitMessage(teamId){
-  return`<div class="no-data" style="padding:40px 20px">
-    <i class="ti ti-alert-triangle" style="color:var(--med)"></i>
-    <strong style="color:var(--med)">Player stats could not be loaded</strong><br>
+  const msg = `<strong style="color:var(--med)">Player stats could not be loaded</strong><br>
     ${_callCount} API calls made this session. The player stats endpoint
     (<code>/players?id=X</code>) either exceeded the rate limit for your plan,
-    or is not accessible from this browser context.<br><br>
-    ${retryBtn('Retry squad stats', `resetBreaker();loadClubPage(${teamId})`)}
-  </div>`;
+    or is not accessible from this browser context.`;
+  return errorRetryBlock(msg, `resetBreaker();loadClubPage(${teamId})`, 'Retry squad stats');
 }
 
 async function loadSeasonAnalysis(hId,aId,fx,ht,at){
@@ -2261,12 +2319,11 @@ function buildHeader(fx,ht,at){
     <div class="mv-hdr-grad" style="background:linear-gradient(90deg,${hGrad} 0%,transparent 40%,transparent 60%,${aGrad} 100%)"></div>
     <div class="mv-hdr-top-bar" style="background:linear-gradient(90deg,${ht.c},${at.c})"></div>
     <div class="mh-comp">
-      <button class="btn-back" onclick="backFromMatch()" title="Back"><i class="ti ti-arrow-left"></i> Back</button>
-      <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i class="ti ti-menu-2"></i> Menu</div>
-      <i class="ti ti-tournament"></i>${fx.league.name}
-      ${fx.league.round?'— '+fx.league.round:''}
+      <button class="btn-back" onclick="backFromMatch()" title="Back"><i aria-hidden="true" class="ti ti-arrow-left"></i> Back</button>
+      <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i aria-hidden="true" class="ti ti-menu-2"></i> Menu</div>
+      <i aria-hidden="true" class="ti ti-tournament"></i><span class="mh-comp-lg">${fx.league.name}${fx.league.round?' — '+fx.league.round:''}</span>
       ${live?'<span class="chip chip-live">LIVE</span>':fin?'<span class="chip chip-ft">FT</span>':'<span class="chip chip-ns">'+fmtTime(f.date)+'</span>'}
-      <button class="btn-back" style="margin-left:auto" onclick="copyMatchLink(${f.id},this)" title="Copy a shareable link to this match"><i class="ti ti-share"></i> Share</button>
+      <button class="btn-back" style="margin-left:auto" onclick="copyMatchLink(${f.id},this)" title="Copy a shareable link to this match"><i aria-hidden="true" class="ti ti-share"></i> Share</button>
     </div>
     <div class="mh-scores">
       <div class="mh-team-h">
@@ -2297,7 +2354,7 @@ function buildHeader(fx,ht,at){
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-        ${f.referee?`<span class="ref-badge"><i class="ti ti-whistle" style="font-size:10px"></i>${f.referee}</span>`:''}
+        ${f.referee?`<span class="ref-badge"><i aria-hidden="true" class="ti ti-whistle" style="font-size:10px"></i>${f.referee}</span>`:''}
       </div>
       <div class="mh-ctx-team" style="flex-direction:row-reverse">
         <span class="mh-ctx-label" style="color:${at.c};text-align:right">${at.a}</span>
@@ -2307,7 +2364,7 @@ function buildHeader(fx,ht,at){
       </div>
     </div>
     <div class="mh-info">
-      ${f.venue?.name?`<span><i class="ti ti-map-pin" style="font-size:9px;margin-right:2px"></i>${f.venue.name}${f.venue.city?', '+f.venue.city:''}</span>`:''}
+      ${f.venue?.name?`<span><i aria-hidden="true" class="ti ti-map-pin" style="font-size:9px;margin-right:2px"></i>${f.venue.name}${f.venue.city?', '+f.venue.city:''}</span>`:''}
     </div>
   </div>`;
 }
@@ -2337,7 +2394,7 @@ function buildOverviewTab(fx,ht,at){
   // Match context panel (form + standings filled async)
   if(!INTL_LEAGUES.has(fx.league?.id)){
     h+=`<div class="ctx-panel">
-      <div class="ctx-sec-hd"><i class="ti ti-table" style="font-size:11px"></i> League table</div>
+      <div class="ctx-sec-hd"><i aria-hidden="true" class="ti ti-table" style="font-size:11px"></i> League table</div>
       <div id="ctx-standings"><div class="skel skel-line" style="width:100%;height:36px;margin-bottom:0"></div></div>
     </div>
     <div id="ctx-h2h"></div>`;
@@ -2346,7 +2403,7 @@ function buildOverviewTab(fx,ht,at){
   h+='<div class="two-col">';
 
   // Events
-  h+=`<div><h2 class="stitle"><i class="ti ti-timeline-event"></i>Match events</h2>`;
+  h+=`<div><h2 class="stitle"><i aria-hidden="true" class="ti ti-timeline-event"></i>Match events</h2>`;
   if(events.length){
     h+='<div class="ev-list">';
     for(const ev of events){
@@ -2370,7 +2427,7 @@ function buildOverviewTab(fx,ht,at){
     }
     h+='</div>';
   }else{
-    h+=`<div class="no-data"><i class="ti ti-clock"></i><strong>No events recorded yet</strong></div>`;
+    h+=`<div class="no-data"><i aria-hidden="true" class="ti ti-clock"></i><strong>No events recorded yet</strong></div>`;
   }
 
   // Card timing split — first half vs second half, from this match's own
@@ -2395,7 +2452,7 @@ function buildOverviewTab(fx,ht,at){
       <span class="ct-split-nums">${b.first} 1H · ${b.second} 2H</span>
     </div>`;
     h+=`<div class="ct-split">
-      <div class="ct-split-hd"><i class="ti ti-clock" style="font-size:11px"></i> Card timing <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— before / after half-time</span></div>
+      <div class="ct-split-hd"><i aria-hidden="true" class="ti ti-clock" style="font-size:11px"></i> Card timing <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— before / after half-time</span></div>
       ${splitRow(ht.a, ht.c, hB)}
       ${splitRow(at.a, at.c, aB)}
     </div>`;
@@ -2403,7 +2460,7 @@ function buildOverviewTab(fx,ht,at){
   h+='</div>';
 
   // Team stats
-  h+=`<div><h2 class="stitle"><i class="ti ti-chart-bar"></i>Team statistics</h2>`;
+  h+=`<div><h2 class="stitle"><i aria-hidden="true" class="ti ti-chart-bar"></i>Team statistics</h2>`;
   if(stats.length>=2){
     const hSt=stats.find(s=>s.team.id===hId)?.statistics||[];
     const aSt=stats.find(s=>s.team.id!==hId)?.statistics||[];
@@ -2428,7 +2485,7 @@ function buildOverviewTab(fx,ht,at){
       </div>`;
     }
   }else{
-    h+=`<div class="no-data"><i class="ti ti-chart-bar"></i><strong>Team stats available after kickoff</strong></div>`;
+    h+=`<div class="no-data"><i aria-hidden="true" class="ti ti-chart-bar"></i><strong>Team stats available after kickoff</strong></div>`;
   }
   h+='</div></div>';
   return h;
@@ -2603,7 +2660,7 @@ function buildPitch(lineup,subMap,col,lookup,photoLk,evLk){
     return`<div class="pp-sub-row${cameon?' pp-sub-on':''}">
       <div class="pp-sub-num" style="color:${col}">${num}</div>
       ${photo?`<img src="${photo}" alt="" class="pp-sub-photo" loading="lazy" onerror="this.remove()">`
-             :`<div class="pp-sub-photo pp-sub-nophoto"><i class="ti ti-user" style="font-size:10px"></i></div>`}
+             :`<div class="pp-sub-photo pp-sub-nophoto"><i aria-hidden="true" class="ti ti-user" style="font-size:10px"></i></div>`}
       <div class="pp-sub-info">
         <span class="pp-sub-name">${name}</span>
         <span class="pp-sub-pos pos-${normalizePos(pos)}">${pos||'?'}</span>
@@ -2702,7 +2759,7 @@ function buildMatchupCard(atk, def, atkCol, defCol){
       </div>
     </div>
     <div class="mu-vs">
-      <i class="ti ti-swords"></i>
+      <i aria-hidden="true" class="ti ti-swords"></i>
       <div class="mu-tier ${tier.cls}">${tier.label}</div>
     </div>
     <div class="mu-side mu-side-r">
@@ -2721,7 +2778,7 @@ function buildMatchupCard(atk, def, atkCol, defCol){
 function buildMatchupSection(title, attackers, defenders, atkCol, defCol){
   if(!attackers.length || !defenders.length){
     return`<div class="no-data" style="padding:20px">
-      <i class="ti ti-swords"></i>
+      <i aria-hidden="true" class="ti ti-swords"></i>
       <strong>${title}</strong><br>Not enough data to identify matchups — need both take-on data for attackers and foul data for defenders.
     </div>`;
   }
@@ -2735,8 +2792,12 @@ function buildMatchupSection(title, attackers, defenders, atkCol, defCol){
 
 function buildMatchupsTab(fx,ht,at){
   if(!_saHomePlayers.length && !_saAwayPlayers.length){
+    // Spinner instead of a static icon (Phase 4, 2026-08-27) — this tab is
+    // usually mid-fetch, not genuinely empty, when a player first sees this;
+    // matches the "actively loading" visual language the Analysis tab's own
+    // progress indicator already uses, instead of reading as a dead end.
     return`<div class="no-data" style="padding:40px 20px">
-      <i class="ti ti-swords"></i>
+      <div class="spnr" style="margin:0 auto 10px"></div>
       <strong>Waiting for season analysis</strong><br>
       Matchups are derived from the same club-stat data shown in the Analysis tab. Open the Analysis tab first, or wait for it to finish loading.
     </div>`;
@@ -2750,7 +2811,7 @@ function buildMatchupsTab(fx,ht,at){
   return`<div class="tip-box">
     <strong style="color:var(--violet)">ℹ How to read this</strong> — these pairings are a heuristic based on player role and season tendencies, not actual marking assignments (tactical/marking data isn't available). An attacker ranked by take-ons (dribble attempts/90) is paired against the opposition's most foul-prone defender/midfielder by role. The "tier" reflects how often this type of matchup tends to produce fouls — not a probability of a specific event.
   </div>
-  <h2 class="stitle"><i class="ti ti-swords"></i>Likely duel matchups <span class="chip chip-af" style="margin-left:6px">Heuristic</span></h2>
+  <h2 class="stitle"><i aria-hidden="true" class="ti ti-swords"></i>Likely duel matchups <span class="chip chip-af" style="margin-left:6px">Heuristic</span></h2>
   <div class="mu-grid">
     <div>${buildMatchupSection(`${fx.teams.home.name} attack vs ${fx.teams.away.name} defence`, homeAtk, awayDef, ht.c, at.c)}</div>
     <div>${buildMatchupSection(`${fx.teams.away.name} attack vs ${fx.teams.home.name} defence`, awayAtk, homeDef, at.c, ht.c)}</div>
@@ -2804,14 +2865,23 @@ function tpProbCls(p){return p>=0.5?'hi':p>=0.25?'md':'lo'}
 function buildBookingPickRow(p, col, rank){
   const pct = Math.round(p.prob*100);
   const posFactor = POS_FACTOR[p.pos]||1.0;
-  const photoImg = p.photo?`<img src="${p.photo}" alt="" class="tp-photo" loading="lazy" onerror="this.remove()">`:'';
+  // Reuse the same conic-gradient probability ring the Analysis tab wraps
+  // around player photos (Phase 4, 2026-08-27: "pick one consistent visual
+  // language for card-probability" — the ring was the newest/most polished
+  // treatment but Top Picks still showed a bare photo + a separate colored
+  // number, so the two were visually disconnected here).
+  const initials=(p.name||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
+  const photoImg = p.photo
+    ?`<img src="${p.photo}" alt="" class="tp-photo" loading="lazy" onerror="this.outerHTML='<div class=\\'tp-photo tp-photo-ph\\'>${initials}</div>'">`
+    :`<div class="tp-photo tp-photo-ph">${initials}</div>`;
+  const ringEl = `<div class="sa-avatar-ring" style="--pct:${Math.min(pct,100)};--ring-col:${probBarColor(pct)}">${photoImg}</div>`;
   const srcTxt = p.srcTeam||p.srcLeague
     ? `${p.srcTeam||''}${p.srcTeam&&p.srcLeague?' · ':''}${p.srcLeague||''}`
     : '';
   return`<div class="tp-row">
     <div class="tp-row-top">
       <span class="tp-rank">#${rank}</span>
-      ${photoImg}
+      ${ringEl}
       <div class="tp-info">
         <span class="tp-name" style="color:${col}">${p.name}</span>
         <span class="tp-pos pos-${p.pos}">${p.posL}</span>
@@ -2854,7 +2924,7 @@ function renderTopPicksTab(fx,ht,at){
 function buildTopPicksTab(fx,ht,at){
   if(!_saHomePlayers.length && !_saAwayPlayers.length){
     return`<div class="no-data" style="padding:40px 20px">
-      <i class="ti ti-star"></i>
+      <div class="spnr" style="margin:0 auto 10px"></div>
       <strong>Waiting for season analysis</strong><br>
       Top Picks are derived from the same club-stat data shown in the Analysis tab. Open the Analysis tab first, or wait for it to finish loading.
     </div>`;
@@ -2905,19 +2975,19 @@ function buildTopPicksTab(fx,ht,at){
 
   const bookingHtml = bookingPicks.length
     ? bookingPicks.map((p,i)=>buildBookingPickRow(p,p.col,i+1)).join('')
-    : `<div class="no-data" style="padding:16px"><i class="ti ti-shield-off"></i>No booking-probability data available.</div>`;
+    : `<div class="no-data" style="padding:16px"><i aria-hidden="true" class="ti ti-shield-off"></i>No booking-probability data available.</div>`;
 
   const foulHtml = foulPicks.length
     ? `<div class="tp-foul-hdr">
         <span></span><span></span><span>Player</span><span></span><span>Team</span><span>Rate</span><span>1+</span><span>2+</span><span>3+</span>
       </div>` + foulPicks.map((p,i)=>buildFoulPickRow(p,p.col,i+1)).join('')
-    : `<div class="no-data" style="padding:16px"><i class="ti ti-ban"></i>No foul-rate data available for this match's competitions.</div>`;
+    : `<div class="no-data" style="padding:16px"><i aria-hidden="true" class="ti ti-ban"></i>No foul-rate data available for this match's competitions.</div>`;
 
   return`${banner}
-  <h2 class="stitle"><i class="ti ti-shield-check"></i>Most likely to be booked <span class="chip chip-af" style="margin-left:6px">P(yellow card)</span></h2>
+  <h2 class="stitle"><i aria-hidden="true" class="ti ti-shield-check"></i>Most likely to be booked <span class="chip chip-af" style="margin-left:6px">P(yellow card)</span></h2>
   <div class="tp-list" style="margin-bottom:22px">${bookingHtml}</div>
 
-  <h2 class="stitle"><i class="ti ti-flag"></i>Most likely to commit fouls <span class="chip chip-af" style="margin-left:6px">Poisson, λ = FC/90</span></h2>
+  <h2 class="stitle"><i aria-hidden="true" class="ti ti-flag"></i>Most likely to commit fouls <span class="chip chip-af" style="margin-left:6px">Poisson, λ = FC/90</span></h2>
   <div style="font-size:10px;color:var(--dim);margin-bottom:10px">
     P(1+), P(2+), P(3+) = probability of committing at least that many fouls this match, assuming a full 90 minutes at this season's foul rate.
   </div>
@@ -2952,7 +3022,7 @@ function buildLineupsTab(fx,ht,at){
   const events=fx.events||[];
   if(!lineups.length){
     const ns=!isLive(fx.fixture.status.short)&&!isFinal(fx.fixture.status.short);
-    return`<div class="no-data"><i class="ti ti-layout-list"></i><strong>Lineup not available</strong><br>
+    return`<div class="no-data"><i aria-hidden="true" class="ti ti-layout-list"></i><strong>Lineup not available</strong><br>
     ${ns?'Starting XIs are published 20–40 minutes before kickoff for covered competitions.':'No lineup data recorded for this match.'}</div>`;
   }
   const hL=lineups[0],aL=lineups[1]||lineups[0];
@@ -2971,14 +3041,14 @@ function buildLineupsTab(fx,ht,at){
     <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin-bottom:14px;padding:11px 14px;background:var(--card2);border:1px solid var(--border);border-radius:10px;">
       <div>
         <div style="font-size:13px;font-weight:600;color:${ht.c}">${fx.teams.home.name}</div>
-        ${hL.coach?.name?`<div style="font-size:10px;color:var(--dim);margin-top:2px"><i class="ti ti-user" style="font-size:9px"></i> ${hL.coach.name}</div>`:''}
+        ${hL.coach?.name?`<div style="font-size:10px;color:var(--dim);margin-top:2px"><i aria-hidden="true" class="ti ti-user" style="font-size:9px"></i> ${hL.coach.name}</div>`:''}
       </div>
       <div style="text-align:center;font-size:18px;font-weight:800;font-family:var(--mono);color:var(--gold)">
         ${hL.formation||'?'} <span style="color:var(--dim);font-size:12px;font-weight:600">vs</span> ${aL.formation||'?'}
       </div>
       <div style="text-align:right">
         <div style="font-size:13px;font-weight:600;color:${at.c}">${fx.teams.away.name}</div>
-        ${aL.coach?.name?`<div style="font-size:10px;color:var(--dim);margin-top:2px">${aL.coach.name} <i class="ti ti-user" style="font-size:9px"></i></div>`:''}
+        ${aL.coach?.name?`<div style="font-size:10px;color:var(--dim);margin-top:2px">${aL.coach.name} <i aria-hidden="true" class="ti ti-user" style="font-size:9px"></i></div>`:''}
       </div>
     </div>
     <div class="pitch-stat-toggle">
@@ -3018,7 +3088,7 @@ function buildLiveStatsTab(fx,ht,at){
   const hId=fx.teams.home.id;
   const live=isLive(fx.fixture.status.short);
   if(!players.length){
-    return`<div class="no-data"><i class="ti ti-activity"></i><strong>Player match stats ${live?'loading…':'not available'}</strong><br>
+    return`<div class="no-data"><i aria-hidden="true" class="ti ti-activity"></i><strong>Player match stats ${live?'loading…':'not available'}</strong><br>
     Per-player statistics are recorded for supported competitions once the match begins.<br>
     <span style="font-size:10px">Live data updates every 60 seconds for covered competitions.</span></div>`;
   }
@@ -3059,7 +3129,7 @@ function buildLiveStatsTab(fx,ht,at){
   };
 
   return`<div>
-    <h2 class="stitle"><i class="ti ti-activity"></i>Player match statistics <span class="chip chip-live" style="margin-left:6px">${live?'LIVE':'MATCH DATA'}</span></h2>
+    <h2 class="stitle"><i aria-hidden="true" class="ti ti-activity"></i>Player match statistics <span class="chip chip-live" style="margin-left:6px">${live?'LIVE':'MATCH DATA'}</span></h2>
     <div style="font-size:10px;color:var(--dim);margin-bottom:12px">Sorted by fouls committed · 🔴 4+ fouls · 🟡 2-3 fouls · FC = committed · FD = drawn · data from single API call</div>
     <div class="ls-wrap">
       <table class="ls-tbl">
@@ -3212,16 +3282,16 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
 
   const teamSec=(players, col, teamName)=>{
     if(!players.length)return`<div class="no-data" style="padding:14px">
-      <i class="ti ti-user-off" style="font-size:20px;display:block;margin-bottom:6px"></i>No stats available.
+      <i aria-hidden="true" class="ti ti-user-off" style="font-size:20px;display:block;margin-bottom:6px"></i>No stats available.
     </div>`;
     const starters = players.filter(p=>p.xistatus==='starter');
     const bench    = players.filter(p=>p.xistatus==='bench');
     const rest     = players.filter(p=>!p.xistatus); // squad-only path, no tag
     if(starters.length || bench.length){
       return`
-        <div class="sa-xi-hd"><i class="ti ti-circle-filled" style="color:var(--low);font-size:8px"></i> Starting XI</div>
+        <div class="sa-xi-hd"><i aria-hidden="true" class="ti ti-circle-filled" style="color:var(--low);font-size:8px"></i> Starting XI</div>
         ${starters.map(p=>buildSaCard(p,isIntl,src)).join('')}
-        ${bench.length?`<div class="sa-xi-hd sa-xi-bench"><i class="ti ti-arrows-exchange" style="color:var(--dim);font-size:9px"></i> Substitutes</div>
+        ${bench.length?`<div class="sa-xi-hd sa-xi-bench"><i aria-hidden="true" class="ti ti-arrows-exchange" style="color:var(--dim);font-size:9px"></i> Substitutes</div>
         ${bench.map(p=>buildSaCard(p,isIntl,src)).join('')}`:''}`;
     }
     return rest.map(p=>buildSaCard(p,isIntl,src)).join('');
@@ -3261,13 +3331,18 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
   </div>`:'';
 
   return`${banner}${refBanner}${cardBanner}${threatBanner}
-  <h2 class="stitle"><i class="ti ti-target"></i>Card probability — season analysis
+  <h2 class="stitle"><i aria-hidden="true" class="ti ti-target"></i>Card probability — season analysis
     <span class="chip chip-af" style="margin-left:6px">Poisson model</span>
     ${isIntl&&(src==='club'||src==='squad')?`<span class="chip" style="margin-left:4px;background:rgba(0,184,118,.12);color:var(--low);border:1px solid rgba(0,184,118,.25)">Club stats</span>`:''}
     ${isIntl&&src==='squad'?`<span class="chip" style="margin-left:4px;background:rgba(240,179,35,.1);color:var(--gold);border:1px solid rgba(240,179,35,.25)">Full squad</span>`:''}
   </h2>
-  <div style="font-size:10px;color:var(--dim);margin-bottom:14px">
-    P(yellow card this match) · click a player to see the full breakdown and source
+  <div style="font-size:10px;color:var(--dim);margin-bottom:14px;display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+    <span>P(yellow card this match) · click a player to see the full breakdown and source</span>
+    <span class="risk-legend" title="Colour bands for the probability shown on each player card">
+      <span class="risk-legend-item"><span class="risk-dot" style="background:var(--low)"></span>&lt;15%</span>
+      <span class="risk-legend-item"><span class="risk-dot" style="background:var(--med)"></span>15–29%</span>
+      <span class="risk-legend-item"><span class="risk-dot" style="background:var(--high)"></span>≥30%</span>
+    </span>
   </div>
   <div class="sa-grid">
     <div><div class="sa-thd" style="color:${ht.c}">${fx.teams.home.name}</div>${teamSec(hPs,ht.c,fx.teams.home.name)}</div>
@@ -3386,11 +3461,11 @@ function buildOddsTab(predData,oddsData,fx,ht,at){
   const bets=oddsData?.response?.[0]?.bookmakers?.[0]?.bets||[];
 
   if(!pred&&!bets.length){
-    return`<div class="no-data"><i class="ti ti-trending-up"></i><strong>No predictions available</strong><br>
+    return`<div class="no-data"><i aria-hidden="true" class="ti ti-trending-up"></i><strong>No predictions available</strong><br>
     Win probability models and bookmaker odds are typically published 48–72 hours before kickoff, and may not be available for all competitions.</div>`;
   }
 
-  let h=`<h2 class="stitle"><i class="ti ti-trending-up"></i>Predictions</h2>`;
+  let h=`<h2 class="stitle"><i aria-hidden="true" class="ti ti-trending-up"></i>Predictions</h2>`;
   // Declared at function scope (not inside `if(pred)`) so the value-vs-odds
   // block further down — inside a separate `if(bets.length)` block — can
   // still read them.
@@ -3573,7 +3648,7 @@ async function copyMatchLink(fid, btn){
   const flash = (label) => {
     if(!btn) return;
     const orig = btn.innerHTML;
-    btn.innerHTML = `<i class="ti ti-check"></i> ${label}`;
+    btn.innerHTML = `<i aria-hidden="true" class="ti ti-check"></i> ${label}`;
     setTimeout(()=>{ btn.innerHTML = orig; }, 1800);
   };
   try{
@@ -3677,14 +3752,10 @@ function renderLanding(){
     // A failed load with no error surfaced here is what made the dashboard
     // look like it "doesn't load" with no explanation on first open.
     if(_landingErrMsg){
-      el.innerHTML=`<div class="lp-empty">
-        <i class="ti ti-alert-triangle" style="color:var(--high)"></i>
-        <div>${_landingErrMsg}</div>
-        ${retryBtn('Retry', 'loadFixtures()')}
-      </div>`;
+      el.innerHTML=errorRetryBlock(_landingErrMsg, 'loadFixtures()');
     } else if(_fixturesFetchDone){
       el.innerHTML=`<div class="lp-empty">
-        <i class="ti ti-calendar-off"></i>
+        <i aria-hidden="true" class="ti ti-calendar-off"></i>
         <div>No fixtures found for ${dayLabel(d)}.</div>
       </div>`;
     } else {
@@ -3726,9 +3797,9 @@ function renderLanding(){
 
   const heroHtml=`<div class="lp-hero">
     <div style="display:flex;align-items:center;gap:12px">
-      <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i class="ti ti-menu-2"></i> Menu</div>
+      <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i aria-hidden="true" class="ti ti-menu-2"></i> Menu</div>
       <div>
-        <h1 class="lp-logo"><i class="ti ti-shield-bolt"></i>Banits Betting</h1>
+        <h1 class="lp-logo"><i aria-hidden="true" class="ti ti-shield-bolt"></i>Banits Betting</h1>
         <div class="lp-tagline">${dayLabel(d)} · Match analysis & card probability</div>
       </div>
     </div>
@@ -3785,16 +3856,44 @@ function renderLanding(){
     ? fixtures.filter(f=>_favTeams.has(f.teams.home.id)||_favTeams.has(f.teams.away.id))
     : [];
   const favHtml = favFixtures.length ? `<div class="lp-section lp-fav-section">
-    <div class="lp-sec-hd"><i class="ti ti-star-filled" style="color:var(--gold);font-size:11px;margin-right:4px"></i> Your teams</div>
+    <div class="lp-sec-hd"><i aria-hidden="true" class="ti ti-star-filled" style="color:var(--gold);font-size:11px;margin-right:4px"></i> Your teams</div>
     <div class="lp-grid">${favFixtures.map(renderLpCard).join('')}</div>
+  </div>` : '';
+
+  // First-run explainer (Phase 4, 2026-08-27) — the audit's own "How to read
+  // this" .tip-box pattern (already used well in Matchups and the Analysis
+  // methodology banners), extended to a one-time landing-page intro so a
+  // first-time visitor knows what the % on every card means before they
+  // click in. Shown once per browser; dismissing it (or opening any match)
+  // never shows it again.
+  let introHtml='';
+  try{
+    if(!localStorage.getItem('banits_seen_intro')){
+      introHtml=`<div class="tip-box lp-intro" id="lp-intro" style="position:relative;padding-right:32px;margin-bottom:10px">
+        <button onclick="dismissIntro()" class="lp-intro-close" aria-label="Dismiss this explainer" title="Dismiss"><i aria-hidden="true" class="ti ti-x"></i></button>
+        <strong>What am I looking at?</strong> Every player card shows a modelled <strong>probability of a yellow card this match</strong>, built from season foul rate, position, the match referee's tendencies, and (once lineups are out) confirmed minutes. Colour means the same thing everywhere in the app — <span style="color:var(--low);font-weight:700">green</span> low risk, <span style="color:var(--med);font-weight:700">amber</span> medium, <span style="color:var(--high);font-weight:700">red</span> high. Open a fixture below to see it.
+      </div>`;
+    }
+  }catch(e){}
+
+  // Sparse-day filler (Phase 4, 2026-08-27) — a quiet day (a handful of
+  // fixtures, not zero — that's the separate "no fixtures" branch above)
+  // previously left the main column trailing into empty background below
+  // a short list, with nothing telling the user that's expected rather than
+  // broken. Threshold is deliberately low (<=3) so a normal, merely
+  // shortish day never shows it.
+  const sparseHtml = (visible.length>0 && visible.length<=3) ? `<div class="tip-box" style="margin-top:4px">
+    <i aria-hidden="true" class="ti ti-calendar-off" style="margin-right:6px;color:var(--dim)"></i>
+    A quiet day across the tracked leagues — just ${visible.length} fixture${visible.length===1?'':'s'} today.
+    Use the date arrows in the sidebar to jump ahead, or browse the League Tables tab while you wait.
   </div>` : '';
 
   el.innerHTML=`${heroHtml}${buildLiveSpotlight(live)}<div class="lp-body">
     <!-- CENTER: fixtures with dropdown -->
-    <div class="lp-main">${favHtml}${leagueDropdown}${groupsHtml}${toggleBtn}</div>
+    <div class="lp-main">${introHtml}${favHtml}${leagueDropdown}${groupsHtml}${sparseHtml}${toggleBtn}</div>
     <!-- RIGHT: WC widget + setup + results -->
     <div class="lp-results-col">
-      <div class="lp-sec-hd" style="margin-top:14px"><i class="ti ti-ball-football" style="color:var(--gold)"></i> Results</div>
+      <div class="lp-sec-hd" style="margin-top:14px"><i aria-hidden="true" class="ti ti-ball-football" style="color:var(--gold)"></i> Results</div>
       <div id="lp-results-list"><div class="ld-msg" style="padding:16px 0"><div class="spnr"></div>Loading…</div></div>
     </div>
   </div>`;
@@ -3822,7 +3921,7 @@ async function loadResultsPanel(){
   const candidates=visible.filter(f=>isLive(f.fixture.status.short)||isFinal(f.fixture.status.short));
 
   if(!candidates.length){
-    container.innerHTML=`<div class="no-data" style="padding:24px 10px"><i class="ti ti-ball-off"></i>No results yet today.<br><span style="font-size:10px">Check back once matches kick off.</span></div>`;
+    container.innerHTML=`<div class="no-data" style="padding:24px 10px"><i aria-hidden="true" class="ti ti-ball-off"></i>No results yet today.<br><span style="font-size:10px">Check back once matches kick off.</span></div>`;
     return;
   }
 
@@ -3980,11 +4079,19 @@ function openLeagues(){
 }
 
 function renderLeaguesNav(){
+  // ARIA tablist parity with the match-view tab bar (Phase 4, 2026-08-27) —
+  // #lg-tabs itself gets role="tablist" in the HTML shell; each button here
+  // gets a stable id + role="tab"/aria-selected, and the single #lg-body
+  // panel's aria-labelledby is repointed to whichever tab is active, since
+  // (unlike the match view) this view swaps ONE panel's content rather than
+  // keeping 9 separate panels in the DOM at once.
   const nav=document.getElementById('lg-tabs');
   if(!nav)return;
   nav.innerHTML=LEAGUE_META.map(lg=>
-    `<button class="tab-btn${lg.id===_activeLeagueId?' on':''}" onclick="switchLeagueTab(${lg.id})">${lg.name}<span style="color:var(--dim);font-weight:400;margin-left:4px">${lg.country}</span></button>`
+    `<button id="lgtabbtn-${lg.id}" class="tab-btn${lg.id===_activeLeagueId?' on':''}" role="tab" aria-selected="${lg.id===_activeLeagueId}" aria-controls="lg-body" onclick="switchLeagueTab(${lg.id})">${lg.name}<span style="color:var(--dim);font-weight:400;margin-left:4px">${lg.country}</span></button>`
   ).join('');
+  const body=document.getElementById('lg-body');
+  if(body)body.setAttribute('aria-labelledby','lgtabbtn-'+_activeLeagueId);
 }
 
 function switchLeagueTab(id){
@@ -4007,7 +4114,7 @@ async function loadLeagueStandings(leagueId){
   // they're looking at now.
   if(_activeLeagueId!==leagueId || !_leaguesOpen)return;
   if(!table || !table.length){
-    body.innerHTML=`<div class="no-data" style="padding:32px 10px"><i class="ti ti-table-off"></i>Standings not available yet for this league/season.<br><span style="font-size:10px">Try the other season toggle in the sidebar, or check back once the season is underway.</span></div>`;
+    body.innerHTML=`<div class="no-data" style="padding:32px 10px"><i aria-hidden="true" class="ti ti-table-off"></i>Standings not available yet for this league/season.<br><span style="font-size:10px">Try the other season toggle in the sidebar, or check back once the season is underway.</span></div>`;
     return;
   }
   body.innerHTML=buildFullStandingsTable(table);
@@ -4015,9 +4122,7 @@ async function loadLeagueStandings(leagueId){
 
 function buildFullStandingsTable(table, highlightTeamId){
   const rows=table.map(t=>{
-    const form=(t.form||'').slice(-5).split('').map(r=>
-      `<div class="mt-fb" style="background:${r==='W'?'#16a34a':r==='L'?'#dc2626':r==='D'?'#ca8a04':'transparent'}" title="${r||'?'}"></div>`
-    ).join('');
+    const form=(t.form||'').slice(-5).split('').map(formDot).join('');
     const hl = highlightTeamId!=null && t.team.id===highlightTeamId;
     // Rows link into the club page (SECTION 15c) — a lightweight way to
     // browse peer clubs in the same table, WhoScored-style.
@@ -4133,7 +4238,7 @@ function openClubSearch(){
   const input=document.getElementById('club-search-input');
   const resultsEl=document.getElementById('club-search-results');
   if(input){ input.value=''; setTimeout(()=>input.focus(),50); }
-  if(resultsEl) resultsEl.innerHTML = `<div class="no-data" style="padding:24px 10px"><i class="ti ti-search"></i>Search across the ${LEAGUE_META.length} tracked leagues — ${LEAGUE_META.map(l=>l.name).join(', ')}.</div>`;
+  if(resultsEl) resultsEl.innerHTML = `<div class="no-data" style="padding:24px 10px"><i aria-hidden="true" class="ti ti-search"></i>Search across the ${LEAGUE_META.length} tracked leagues — ${LEAGUE_META.map(l=>l.name).join(', ')}.</div>`;
   buildClubIndex(); // warm the index in the background so the first keystroke doesn't wait on it
 }
 
@@ -4148,7 +4253,7 @@ async function renderClubSearchResults(q){
   if(!resultsEl) return;
   const query=(q||'').trim();
   if(query.length<2){
-    resultsEl.innerHTML = `<div class="no-data" style="padding:24px 10px"><i class="ti ti-search"></i>Type at least 2 characters to search.</div>`;
+    resultsEl.innerHTML = `<div class="no-data" style="padding:24px 10px"><i aria-hidden="true" class="ti ti-search"></i>Type at least 2 characters to search.</div>`;
     return;
   }
   resultsEl.innerHTML = `<div class="ld-msg"><div class="spnr"></div>Searching…</div>`;
@@ -4160,7 +4265,7 @@ async function renderClubSearchResults(q){
   const ql=query.toLowerCase();
   const matches = index.filter(c=>c.name.toLowerCase().includes(ql)).slice(0,20);
   if(!matches.length){
-    resultsEl.innerHTML = `<div class="no-data" style="padding:24px 10px"><i class="ti ti-info-circle"></i>No club found matching "${query}" in the tracked leagues.</div>`;
+    resultsEl.innerHTML = `<div class="no-data" style="padding:24px 10px"><i aria-hidden="true" class="ti ti-info-circle"></i>No club found matching "${query}" in the tracked leagues.</div>`;
     return;
   }
   resultsEl.innerHTML = matches.map(c=>`
@@ -4185,9 +4290,9 @@ function buildClubHeaderShell(entry, info, rank, totalTeams){
     ${watermark}
     <div class="mv-hdr-top-bar" style="background:${info.c}"></div>
     <div class="mh-comp">
-      <button class="btn-back" onclick="backFromClub()" title="Back"><i class="ti ti-arrow-left"></i> Back</button>
-      <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i class="ti ti-menu-2"></i> Menu</div>
-      <i class="ti ti-shield"></i>${entry.leagueName}
+      <button class="btn-back" onclick="backFromClub()" title="Back"><i aria-hidden="true" class="ti ti-arrow-left"></i> Back</button>
+      <div class="sb-hamburger" onclick="openSidebar()" title="Open menu" role="button" tabindex="0" onkeydown="_kbActivate(event)"><i aria-hidden="true" class="ti ti-menu-2"></i> Menu</div>
+      <i aria-hidden="true" class="ti ti-shield"></i>${entry.leagueName}
       ${posTxt?`<span class="chip chip-ns">${posTxt}</span>`:''}
     </div>
     <div class="club-hero">
@@ -4294,7 +4399,7 @@ async function loadClubPage(teamId){
   if(_activeClubId!==teamId) return; // navigated away while the index was loading
   const entry = index.find(c=>c.id===teamId);
   if(!entry){
-    hdrEl.innerHTML = `<div class="ld-msg" style="color:var(--high)">Couldn't find this club in the tracked leagues.<br>${retryBtn('Back to search','openClubSearch()')}</div>`;
+    hdrEl.innerHTML = errorRetryBlock("Couldn't find this club in the tracked leagues.", 'openClubSearch()', 'Back to search');
     bodyEl.innerHTML='';
     return;
   }
@@ -4317,7 +4422,7 @@ async function loadClubPage(teamId){
   let bodyHtml = '';
   if(table && table.length){
     bodyHtml += `<div class="ctx-panel">
-      <div class="ctx-sec-hd"><i class="ti ti-table" style="font-size:11px"></i> ${entry.leagueName} table</div>
+      <div class="ctx-sec-hd"><i aria-hidden="true" class="ti ti-table" style="font-size:11px"></i> ${entry.leagueName} table</div>
       ${buildFullStandingsTable(table, teamId)}
     </div>`;
   } else {
@@ -4326,20 +4431,17 @@ async function loadClubPage(teamId){
     // unlike every other data source on this page. Retries via
     // loadClubPage() directly, not openClub() — the club is already open,
     // so openClub()'s same-club no-op guard would otherwise swallow the click.
-    bodyHtml += `<div class="no-data" style="padding:16px">
-      <i class="ti ti-alert-triangle" style="color:var(--med)"></i>${entry.leagueName} table could not be loaded.
-      ${retryBtn('Retry', `loadClubPage(${teamId})`)}
-    </div>`;
+    bodyHtml += errorRetryBlock(`${entry.leagueName} table could not be loaded.`, `loadClubPage(${teamId})`);
   }
 
   const recent=(last5?.response||[]).slice().reverse(); // API returns oldest→newest; most-recent-first reads better
   const upcoming=next3?.response||[];
   bodyHtml += `<div class="two-col">
-    <div><h2 class="stitle"><i class="ti ti-history"></i>Recent results</h2>
-      ${recent.length ? recent.map(renderLpCard).join('') : `<div class="no-data" style="padding:16px"><i class="ti ti-calendar-off"></i>No recent results found.</div>`}
+    <div><h2 class="stitle"><i aria-hidden="true" class="ti ti-history"></i>Recent results</h2>
+      ${recent.length ? recent.map(renderLpCard).join('') : `<div class="no-data" style="padding:16px"><i aria-hidden="true" class="ti ti-calendar-off"></i>No recent results found.</div>`}
     </div>
-    <div><h2 class="stitle"><i class="ti ti-calendar-event"></i>Upcoming fixtures</h2>
-      ${upcoming.length ? upcoming.map(renderLpCard).join('') : `<div class="no-data" style="padding:16px"><i class="ti ti-calendar-off"></i>No upcoming fixtures scheduled yet.</div>`}
+    <div><h2 class="stitle"><i aria-hidden="true" class="ti ti-calendar-event"></i>Upcoming fixtures</h2>
+      ${upcoming.length ? upcoming.map(renderLpCard).join('') : `<div class="no-data" style="padding:16px"><i aria-hidden="true" class="ti ti-calendar-off"></i>No upcoming fixtures scheduled yet.</div>`}
     </div>
   </div>`;
 
@@ -4349,12 +4451,12 @@ async function loadClubPage(teamId){
   const squadData = squadRes?.data;
   const squadErr = squadRes?.error;
   const squadPlayers = squadData?.response?.[0]?.players || [];
-  bodyHtml += `<h2 class="stitle"><i class="ti ti-users"></i>Squad</h2>
+  bodyHtml += `<h2 class="stitle"><i aria-hidden="true" class="ti ti-users"></i>Squad</h2>
     <div id="club-squad-body">${squadPlayers.length
       ? `<div class="ld-msg"><div class="spnr"></div>Fetching club stats for ${squadPlayers.length} squad players — requests are rate-limited to ~1/sec, so this can take ${Math.ceil(squadPlayers.length*1.1/10)*10}–${Math.ceil(squadPlayers.length*1.4/10)*10}s…</div>`
       : squadErr
-        ? `<div class="no-data" style="padding:16px">${afFailureMessage('Squad list could not be loaded', squadErr)}${retryBtn('Retry', `loadClubPage(${teamId})`)}</div>`
-        : `<div class="no-data" style="padding:16px"><i class="ti ti-users"></i>No squad list available for this club yet.</div>`}</div>`;
+        ? errorRetryBlock(afFailureMessage('Squad list could not be loaded', squadErr), `loadClubPage(${teamId})`)
+        : `<div class="no-data" style="padding:16px"><i aria-hidden="true" class="ti ti-users"></i>No squad list available for this club yet.</div>`}</div>`;
 
   bodyEl.innerHTML = bodyHtml;
   if(_activeClubId!==teamId) return;
@@ -4394,6 +4496,8 @@ async function loadClubPage(teamId){
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
+  initTheme();
+
   // Sync season toggle button to saved preference. (Previously
   // `'stog-'+_seasonMode||'stog-2025'` — operator precedence meant the
   // `||'stog-2025'` fallback was dead code, since the concatenation is
