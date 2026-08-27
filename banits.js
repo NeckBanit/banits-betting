@@ -1787,8 +1787,10 @@ async function fetchPlayersThrottled(players, seasons, onProgress=null, opts={})
   // response with genuinely no stats for that player/season still comes
   // back as a real object (e.g. `{response:[]}`), which extractDomesticStats
   // correctly turns into `stats:null` separately. So `failed` here means
-  // "the request itself didn't go through", not "no stats found" — that
-  // distinction is what makes the second pass below possible.
+  // "the request itself didn't go through", not "no stats found". As of
+  // 2026-08-27 both cases are treated the same by fetchOne()'s caller (both
+  // get one automatic retry) — `failed` is kept distinct here mainly so a
+  // future caller that DOES want to tell the two apart still can.
   async function cachedFetch(id, season){
     const key = `${id}_${season}`;
     // In-memory cache (covers current session + pre-loaded from localStorage above)
@@ -1817,6 +1819,21 @@ async function fetchPlayersThrottled(players, seasons, onProgress=null, opts={})
     // folds in as failed:true, same as any other real fetch failure; the
     // outer second-pass loop already skips entirely while _breakerTripped,
     // so no special-casing needed here.
+    //
+    // 2026-08-27: retryable is now ALWAYS true whenever no season yielded
+    // real stats — previously this only covered a genuine fetch failure
+    // (real 429/network/http error), deliberately excluding a well-formed
+    // "confirmed empty" response (see extractDomesticStats' apps===0 case
+    // and the empty-statistics-array case) on the reasoning that a truly
+    // empty response wouldn't change on an immediate retry. Reported live:
+    // fringe/rotation players (backup keepers, academy call-ups in a cup
+    // tie) sometimes come back blank on the first ask and DO have real
+    // data on a second attempt — the same kind of intermittent
+    // API-Football data-population gap already confirmed for lineup
+    // formation/grid data this same day. The extra cost is bounded to
+    // exactly one additional call per genuinely-blank player per match
+    // view (the second-pass loop below never runs more than once), the
+    // same cost profile the real-failure case already had.
     if(blend){
       // 'Both' season mode — fetch every season in the chain (each still
       // goes through the same per-season cache/localStorage as any other
@@ -1825,24 +1842,18 @@ async function fetchPlayersThrottled(players, seasons, onProgress=null, opts={})
       const fetched = await Promise.all(seasons.map(s=>cachedFetch(lp.id,s)));
       const withStats = fetched.filter(f=>f.stats).map(f=>f.stats);
       if(!withStats.length){
-        const anyFailed = fetched.some(f=>f.failed);
-        return placeholderPlayer(lp, anyFailed);
+        return placeholderPlayer(lp, true);
       }
       if(withStats.length===1) return withStats[0]; // only one season had data — nothing to blend
       return withStats.reduce((a,b)=>blendPlayerStats(a,b));
     }
-    let anyFailed = false;
     const quick = await cachedFetch(lp.id, primarySeason);
     if(quick.stats) return quick.stats;
-    if(quick.failed) anyFailed = true;
     for(const s of fallbackSeasons){
       const fb = await cachedFetch(lp.id, s);
       if(fb.stats) return fb.stats;
-      if(fb.failed) anyFailed = true;
     }
-    // retryable:true only when EVERY season tried failed due to a real fetch
-    // error, not a confirmed-empty response — see cachedFetch note above.
-    return placeholderPlayer(lp, anyFailed);
+    return placeholderPlayer(lp, true);
   }
 
   // Fire all fetches simultaneously — the semaphore throttles to plan limits.
@@ -1865,9 +1876,11 @@ async function fetchPlayersThrottled(players, seasons, onProgress=null, opts={})
   // really there. Previously the only way to recover was a full manual
   // reload, which worked because most other calls were now cache-warm and
   // competing for far fewer queue slots. Reproducing that same recovery
-  // automatically: retry only the players tagged retryable (a real fetch
-  // failure, never a confirmed-empty response) once the main batch has
-  // drained and the queue is short again.
+  // automatically: retry every player tagged retryable once the main batch
+  // has drained and the queue is short again — as of 2026-08-27 that
+  // includes a "confirmed empty" first response too (see fetchOne()'s note
+  // above), not just a real fetch failure, since a fringe/rotation player
+  // reported blank on the first ask can genuinely have real data on retry.
   const retryIdx = results.map((r,i)=>r?.retryable?i:-1).filter(i=>i>=0);
   if(retryIdx.length && !_breakerTripped){
     await new Promise(res=>setTimeout(res,500)); // let the queue fully drain first
@@ -2011,11 +2024,12 @@ async function afFetchRaw(path){
 }
 
 // Placeholder card for a player whose club stats couldn't be found in any
-// season tried. `retryable` marks this as a transient fetch failure (429/
-// network/http-error on every season attempted) rather than a confirmed
-// empty response — fetchPlayersThrottled() uses it to automatically retry
-// once the initial burst has drained, instead of the user needing to
-// manually reload the page to recover players caught in a rate-limit spike.
+// season tried. `retryable` (as of 2026-08-27, always true when this is
+// constructed via fetchOne()'s fallthrough — see its notes) tells
+// fetchPlayersThrottled() to automatically retry this player once the
+// initial burst has drained, instead of the user needing to manually
+// reload the page to recover a player caught in a rate-limit spike OR one
+// that simply came back blank on the first ask.
 function placeholderPlayer(lp, retryable){
   const rawPos = lp.pos || lp.position; // lineup players use 'pos', squad players use 'position'
   return{
