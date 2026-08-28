@@ -1462,6 +1462,69 @@ function hasUsableLineups(fx){
   if(lineups.length < 2) return true;
   return lineups.every(l => l?.formation && Array.isArray(l?.startXI) && l.startXI.length > 0);
 }
+
+// 2026-08-28 (Bug B fix, follow-up #20): confirmed on a real fixture
+// (Chelsea vs Luton, League Cup R64, 2026-08-27, id 1623102) that
+// API-Football sometimes never publishes a fixture's dedicated lineups
+// payload AT ALL — fx.lineups comes back permanently [] — even though the
+// match finished and full per-player match statistics (fx.players) were
+// recorded, including each player's games.substitute flag (false = was in
+// the starting XI; true = came off the bench, whether or not they actually
+// played). hasUsableLineups() above correctly treats lineups.length<2 as
+// "legitimate, not broken" for caching purposes — that part was never wrong
+// — but every UI tab that reads fx.lineups directly was, as a result,
+// falling all the way back to the pre-match "no lineup yet" full-squad view
+// for a match that had already ended, which is what the user reported
+// ("the lineup has not been 'confirmed' ... even though the game has
+// finished. This is a big error ... the lineup should always load").
+//
+// deriveLineupFromPlayerStats() reconstructs a lineup-shaped object (same
+// shape as a real API-Football lineup entry, minus per-player `grid`
+// coordinates, which this data source doesn't carry) from one team's match
+// statistics. deriveLineupsFromPlayerStats() does both teams and returns
+// null if either side has nothing usable, so callers can fall through to
+// existing behaviour unchanged. effectiveLineups() is the single place
+// every lineup-reading tab should call instead of `fx.lineups||[]` — it
+// returns the real lineups whenever API-Football provided them, and only
+// reaches for the derived version when they're absent AND the match has
+// finished (so there's actually stats to derive from — a fixture that's
+// merely pre-match or live is left alone; "not published yet" there is
+// genuinely a different, temporary state, not this data gap).
+function deriveLineupFromPlayerStats(teamPlayers, teamMeta){
+  if(!teamPlayers?.length || !teamMeta) return null;
+  const withGames = teamPlayers.filter(p=>p?.player?.id && p.statistics?.[0]?.games);
+  if(!withGames.length) return null;
+  const toEntry = p => {
+    const g = p.statistics[0].games;
+    return{player:{id:p.player.id,name:p.player.name,number:g.number??null,pos:g.position||null,grid:null}};
+  };
+  const startXI = withGames.filter(p=>p.statistics[0].games.substitute===false).map(toEntry);
+  const substitutes = withGames.filter(p=>p.statistics[0].games.substitute===true).map(toEntry);
+  if(!startXI.length) return null; // nothing recognizable as a starter — let the caller fall back normally
+  return{team:{id:teamMeta.id,name:teamMeta.name,logo:teamMeta.logo||null},formation:null,startXI,substitutes};
+}
+function deriveLineupsFromPlayerStats(fx){
+  if(!fx?.players?.length) return null;
+  const hId=fx.teams?.home?.id, aId=fx.teams?.away?.id;
+  const hPlayers=fx.players.find(t=>t.team?.id===hId)?.players||[];
+  const aPlayers=fx.players.find(t=>t.team?.id===aId)?.players||[];
+  const h=deriveLineupFromPlayerStats(hPlayers, fx.teams?.home);
+  const a=deriveLineupFromPlayerStats(aPlayers, fx.teams?.away);
+  if(!h||!a) return null;
+  const out=[h,a];
+  out._derived=true; // lets callers show honest "reconstructed" messaging instead of claiming an official published lineup
+  return out;
+}
+function effectiveLineups(fx){
+  const real = fx?.lineups||[];
+  if(real.length>=2) return real;
+  if(isFinal(fx?.fixture?.status?.short)){
+    const derived = deriveLineupsFromPlayerStats(fx);
+    if(derived) return derived;
+  }
+  return real;
+}
+
 function fixtureCacheStale(cached){
   const f = cached?.response?.[0];
   if(!f) return true;
@@ -1828,8 +1891,14 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
   _currentInjuries = injuredMap;
 
   const isIntl = INTL_LEAGUES.has(fx.league?.id);
-  const lineups = fx.lineups||[];
+  // 2026-08-28 (Bug B fix): effectiveLineups() transparently substitutes a
+  // reconstructed lineup (derived from match stats) when API-Football never
+  // published one for a finished fixture — see its comment, and
+  // deriveLineupsFromPlayerStats(), above. `lineups._derived` distinguishes
+  // the two so the banner below can be honest about which one this is.
+  const lineups = effectiveLineups(fx);
   const hasLineups = lineups.length >= 2;
+  const lineupsDerived = !!lineups._derived;
 
   if(isIntl && hasLineups){
     // ── NATIONAL TEAM MATCH with confirmed lineup ───────────────
@@ -1868,7 +1937,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
     // Render starters immediately so users have data to read
     const hP = [...hStartP], aP = [...aStartP];
     _saHomePlayers=hP; _saAwayPlayers=aP;
-    document.getElementById('tab-sa').innerHTML = buildSeasonTab(hP,aP,fx,ht,at,{isIntl,cSeason,src:'club',hasLineups:true,hStarters:hStartP.length,aStarters:aStartP.length});
+    document.getElementById('tab-sa').innerHTML = buildSeasonTab(hP,aP,fx,ht,at,{isIntl,cSeason,src:'club',hasLineups:true,lineupsDerived,hStarters:hStartP.length,aStarters:aStartP.length});
     refreshPitchOverlay(); renderMatchupsTab(fx,ht,at); renderTopPicksTab(fx,ht,at); updateCalibrationCheck(fx);
 
     // Phase 2 — bench (background, non-blocking)
@@ -1885,7 +1954,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         hP.push(...hBenchP); aP.push(...aBenchP);
         _saHomePlayers=hP; _saAwayPlayers=aP;
         // Only update the analysis tab if it's currently visible
-        document.getElementById('tab-sa').innerHTML = buildSeasonTab(hP,aP,fx,ht,at,{isIntl,cSeason,src:'club',hasLineups:true,hStarters:hStartP.length,aStarters:aStartP.length});
+        document.getElementById('tab-sa').innerHTML = buildSeasonTab(hP,aP,fx,ht,at,{isIntl,cSeason,src:'club',hasLineups:true,lineupsDerived,hStarters:hStartP.length,aStarters:aStartP.length});
         renderTopPicksTab(fx,ht,at); updateCalibrationCheck(fx);
       }
     }
@@ -2026,7 +2095,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
 
       const hP=[...hStartP], aP=[...aStartP];
       _saHomePlayers=hP; _saAwayPlayers=aP;
-      document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:true,hStarters:hStartP.length,aStarters:aStartP.length,blend,seasonChain});
+      document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:true,lineupsDerived,hStarters:hStartP.length,aStarters:aStartP.length,blend,seasonChain});
       refreshPitchOverlay(); renderMatchupsTab(fx,ht,at); renderTopPicksTab(fx,ht,at); updateCalibrationCheck(fx);
 
       // Phase 2 — bench loads in background
@@ -2039,7 +2108,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
           const aBenchP=applyRecentForm(bRes.slice(j,j+=aBench.length),recentFormMap).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
           hP.push(...hBenchP); aP.push(...aBenchP);
           _saHomePlayers=hP; _saAwayPlayers=aP;
-          document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:true,hStarters:hStartP.length,aStarters:aStartP.length,blend,seasonChain});
+          document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:true,lineupsDerived,hStarters:hStartP.length,aStarters:aStartP.length,blend,seasonChain});
           renderTopPicksTab(fx,ht,at); updateCalibrationCheck(fx);
         }
       }
@@ -2861,6 +2930,40 @@ function eventsLookup(events){
   return map;
 }
 
+// Position-group fallback layout for buildPitch() when no starter has real
+// grid coordinates — see the 2026-08-28 comment inside buildPitch() for why
+// this exists. Groups starters into G/D/M/F rows (goalkeeper nearest y=85,
+// forwards nearest y=12, same axis buildPitch()'s normal gridXY() path
+// uses) and spreads each row's players evenly across x, so a broken-grid
+// fixture still shows a readable, non-overlapping XI instead of one dot.
+// Any player whose `pos` code isn't one of G/D/M/F (missing, or an
+// unexpected value) is folded into the midfield row rather than dropped.
+function buildFallbackPitchLayout(starters){
+  const order=['G','D','M','F'];
+  const groups={G:[],D:[],M:[],F:[]};
+  const other=[];
+  starters.forEach((p,idx)=>{
+    const pos=(p.player?.pos||'').toUpperCase();
+    if(groups[pos]) groups[pos].push(idx); else other.push(idx);
+  });
+  groups.M.push(...other);
+
+  const rows=order.filter(k=>groups[k].length);
+  const totalRows=rows.length||1;
+  const layout=new Array(starters.length);
+  rows.forEach((key,rowIdx)=>{
+    const idxs=groups[key];
+    const yPct = totalRows===1 ? 50 : 85-(rowIdx/(totalRows-1))*73;
+    const rowCount=idxs.length;
+    const halfWidth = rowCount===1 ? 0 : Math.min(8+(rowCount-1)*10,40);
+    idxs.forEach((starterIdx,c)=>{
+      const xPct = rowCount===1 ? 50 : 50-halfWidth+(c/(rowCount-1))*(halfWidth*2);
+      layout[starterIdx]={x:xPct,y:yPct};
+    });
+  });
+  return layout;
+}
+
 function buildPitch(lineup,subMap,col,lookup,photoLk,evLk){
   const starters=lineup.startXI||[];
   const subs=lineup.substitutes||[];
@@ -2876,11 +2979,25 @@ function buildPitch(lineup,subMap,col,lookup,photoLk,evLk){
     return html;
   }
 
+  // 2026-08-28 (Bug A fix): when API-Football's per-player `grid` coordinate
+  // is missing for every starter, gridXY() returns null for all of them and
+  // they used to all fall back to the SAME {x:50,y:50} spot — 11 overlapping,
+  // illegible dots stacked on the center circle. That's a real, observed data
+  // gap (not just a hypothetical), separate from formation being missing —
+  // some fixtures report a formation string with no per-player grid at all.
+  // Detect that up front and, instead of the single-point fallback, lay
+  // starters out by position group (G/D/M/F, using each player's own `pos`
+  // code, which — unlike `grid` — API-Football does still provide) so the
+  // pitch still reads as 11 separate players in roughly the right area, even
+  // without exact coordinates.
+  const anyGrid = starters.some(p=>p.player?.grid);
+  const fallbackLayout = anyGrid ? null : buildFallbackPitchLayout(starters);
+
   // Starters on pitch
-  const starterHtml = starters.map(p=>{
+  const starterHtml = starters.map((p,idx)=>{
     const name=p.player?.name||'?';
     const num=p.player?.number||'';
-    const xy=gridXY(p.player?.grid,formation)||{x:50,y:50};
+    const xy=fallbackLayout ? fallbackLayout[idx] : (gridXY(p.player?.grid,formation)||{x:50,y:50});
     const sub=subMap[name];
     const ev=evLk?.[name];
     const sOff=ev?.sub?.out || !!sub?.out;
@@ -3185,7 +3302,7 @@ function buildTopPicksTab(fx,ht,at){
     </div>`;
   }
 
-  const lineups = fx.lineups||[];
+  const lineups = effectiveLineups(fx); // 2026-08-28: falls back to a stats-derived lineup for a finished match with no published one — see effectiveLineups()
   const hasLineups = lineups.length>=2;
   let hPool = _saHomePlayers, aPool = _saAwayPlayers, narrowed=false;
 
@@ -3219,7 +3336,7 @@ function buildTopPicksTab(fx,ht,at){
   const banner = hasLineups
     ? (narrowed
         ? `<div class="tip-box" style="background:rgba(0,184,118,.06);border-color:rgba(0,184,118,.2)">
-            <strong style="color:var(--low)">✓ Confirmed starting XIs</strong> — rankings below are limited to the 22 confirmed starters.
+            <strong style="color:var(--low)">✓ ${lineups._derived?'Starting XIs reconstructed from match stats':'Confirmed starting XIs'}</strong> — rankings below are limited to the 22 ${lineups._derived?'players who started, per recorded match stats':'confirmed starters'}.
           </div>`
         : `<div class="tip-box" style="background:rgba(232,135,30,.06);border-color:rgba(232,135,30,.2)">
             <strong style="color:var(--med)">⚠ Couldn't match lineup to stats</strong> — showing full squad rankings instead. Some listed players may not start.
@@ -3273,13 +3390,21 @@ function buildLUList(lineup,subMap,col){
 }
 
 function buildLineupsTab(fx,ht,at){
-  const lineups=fx.lineups||[];
+  const lineups=effectiveLineups(fx); // 2026-08-28: falls back to a stats-derived lineup for a finished match with no published one — see effectiveLineups()
   const events=fx.events||[];
   if(!lineups.length){
     const ns=!isLive(fx.fixture.status.short)&&!isFinal(fx.fixture.status.short);
     return`<div class="no-data"><i aria-hidden="true" class="ti ti-layout-list"></i><strong>Lineup not available</strong><br>
     ${ns?'Starting XIs are published 20–40 minutes before kickoff for covered competitions.':'No lineup data recorded for this match.'}</div>`;
   }
+  // 2026-08-28 (Bug B fix): honest disclosure when effectiveLineups() had to
+  // reconstruct this XI from match stats rather than an official published
+  // lineup — see deriveLineupsFromPlayerStats(). No formation is available
+  // this way (shown as "?" below), and buildPitch() lays players out by
+  // position group rather than exact grid coordinates.
+  const derivedNote = lineups._derived ? `<div class="tip-box" style="background:rgba(0,184,118,.06);border-color:rgba(0,184,118,.2);margin-bottom:12px">
+    <strong style="color:var(--low)">✓ Reconstructed from match stats</strong> — no official lineup was published for this match, so the starting XI shown here is inferred from recorded player statistics (who played, not the formation).
+  </div>` : '';
   const hL=lineups[0],aL=lineups[1]||lineups[0];
   // Build sub map from events (legacy — still used by buildLUList)
   const sm={};
@@ -3293,6 +3418,7 @@ function buildLineupsTab(fx,ht,at){
   // Full events lookup (cards + subs) for pitch overlay
   const evLk = eventsLookup(events);
   return`
+    ${derivedNote}
     <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin-bottom:14px;padding:11px 14px;background:var(--card2);border:1px solid var(--border);border-radius:10px;">
       <div>
         <div style="font-size:13px;font-weight:600;color:${ht.c}">${fx.teams.home.name}</div>
@@ -3494,8 +3620,19 @@ function cardProb(fp90,pos,yc,apps,recentFactor=1){
 }
 
 function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
-  const {isIntl,src,cSeason,blend,seasonChain} = meta;
+  const {isIntl,src,cSeason,blend,seasonChain,lineupsDerived} = meta;
   const seasonLbl = s => `${s}/${String(s+1).slice(2)}`;
+
+  // 2026-08-28 (Bug B fix): shown whenever loadSeasonAnalysis() had to
+  // reconstruct the starting XI from match statistics because API-Football
+  // never published a dedicated lineup for this (finished) fixture — see
+  // deriveLineupsFromPlayerStats(). Deliberately separate from the
+  // src-based banner below: this is honest about the source of the XI
+  // (post-match box score, not the official lineup feed), not a substitute
+  // for it.
+  const derivedBanner = lineupsDerived ? `<div class="tip-box" style="background:rgba(0,184,118,.06);border-color:rgba(0,184,118,.2)">
+      <strong style="color:var(--low)">✓ Starting XI reconstructed from match stats</strong> — this competition's data source never published an official lineup for this match, so the starters below are inferred from the recorded player statistics instead (reliable for who played, but formation isn't available).
+    </div>` : '';
 
   let banner='';
   if(isIntl && src==='club'){
@@ -3586,7 +3723,7 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
     </div>
   </div>`:'';
 
-  return`${banner}${refBanner}${cardBanner}${threatBanner}
+  return`${derivedBanner}${banner}${refBanner}${cardBanner}${threatBanner}
   <h2 class="stitle"><i aria-hidden="true" class="ti ti-target"></i>Card probability — season analysis
     <span class="chip chip-af" style="margin-left:6px">Poisson model</span>
     ${isIntl&&(src==='club'||src==='squad')?`<span class="chip" style="margin-left:4px;background:rgba(0,184,118,.12);color:var(--low);border:1px solid rgba(0,184,118,.25)">Club stats</span>`:''}
