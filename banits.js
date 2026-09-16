@@ -996,19 +996,31 @@ function getFixturePlayerBoxes(fid){
 // figures — the raw mins/fouls/cards/matches are kept unweighted because
 // they back the existing hit-rate/fouls-per-card DISPLAY stats, which are
 // counts, not a rate, and shouldn't be distorted by decay.
+// 2026-09-16 (advanced analytics round 2 — card-model-deep-dive-2026-09-16.md
+// §4 Tier 2 #5, "per-player home/away split"): also splits mins/fouls/
+// matches by whether the TEAM was home or away in each specific sampled
+// fixture — `formData.response[i].teams.home/away.id` already carries this,
+// it just wasn't being read before. This is a genuinely different signal
+// from the league-wide home/away factor (SECTION 4c-ii) — that one only
+// knows the league's average home/away split; this is whether THIS player
+// specifically fouls more on the road, independent of the league effect.
+// Zero new API calls — same fetches as everything else in this function.
 async function aggregateTeamRecentForm(teamId, formData){
-  const fids = (formData?.response||[]).slice(-RECENT_FORM_MATCHES).map(f=>f.fixture?.id).filter(Boolean);
+  const recentFx = (formData?.response||[]).slice(-RECENT_FORM_MATCHES).filter(f=>f.fixture?.id);
+  const fids = recentFx.map(f=>f.fixture.id);
   if(!fids.length) return new Map();
   const boxes = await Promise.all(fids.map(getFixturePlayerBoxes));
   const n = boxes.length;
-  const agg = new Map(); // playerId → {mins,fouls,cards,matches,cardedMatches,wMins,wFouls}
+  const agg = new Map(); // playerId → {mins,fouls,cards,matches,cardedMatches,wMins,wFouls,homeMins,homeFouls,homeMatches,awayMins,awayFouls,awayMatches}
   boxes.forEach((byTeam, idx) => {
     const teamMap = byTeam?.[teamId];
     if(!teamMap) return;
     const weight = Math.pow(RECENT_DECAY, n-1-idx); // 1.0 for the most recent fixture in this sample, decaying further back
+    const wasHome = recentFx[idx]?.teams?.home?.id === teamId;
     for(const [pidStr, v] of Object.entries(teamMap)){
       const pid = Number(pidStr);
-      const cur = agg.get(pid) || {mins:0, fouls:0, cards:0, matches:0, cardedMatches:0, wMins:0, wFouls:0};
+      const cur = agg.get(pid) || {mins:0, fouls:0, cards:0, matches:0, cardedMatches:0, wMins:0, wFouls:0,
+        homeMins:0, homeFouls:0, homeMatches:0, awayMins:0, awayFouls:0, awayMatches:0};
       cur.mins += v.mins; cur.fouls += v.fouls;
       cur.wMins += v.mins*weight; cur.wFouls += v.fouls*weight;
       // 2026-08-27 (Phase 5): `cards` may be undefined on a box read from a
@@ -1024,6 +1036,8 @@ async function aggregateTeamRecentForm(teamId, formData){
       // card counts and dividing by matches would overstate the hit rate
       // whenever a match produced more than one card.
       if(vCards>0) cur.cardedMatches += 1;
+      if(wasHome){ cur.homeMins += v.mins; cur.homeFouls += v.fouls; cur.homeMatches += 1; }
+      else { cur.awayMins += v.mins; cur.awayFouls += v.fouls; cur.awayMatches += 1; }
       agg.set(pid, cur);
     }
   });
@@ -1056,6 +1070,117 @@ function recentFormFactor(recent, seasonFp90){
   return Math.min(RECENT_FACTOR_MAX, Math.max(RECENT_FACTOR_MIN, raw));
 }
 
+// 2026-09-16 (advanced analytics round 2 — card-model-deep-dive-2026-09-16.md
+// §4 Tier 2 #5, "per-player home/away split"): a small, secondary bounded
+// multiplier layered ON TOP OF the league-wide home/away factor (SECTION
+// 4c-ii) — this one asks whether THIS SPECIFIC PLAYER fouls more on the
+// road than at home, independent of the league's average tendency, using
+// the same last-RECENT_FORM_MATCHES home/away split now tracked in
+// aggregateTeamRecentForm(). The sample here is necessarily tiny (at most
+// 5 matches split two ways, often 2-3 each), so this uses the same
+// continuous empirical-Bayes shrinkage pattern as the league-wide factor
+// but with a much smaller prior-strength constant (the sample can never
+// realistically reach double digits the way the referee/league sample
+// can) and a tighter clamp — a personal signal from ~2-3 matches should
+// nudge the probability, not swing it as hard as the referee or league
+// factors do. Requires at least one recorded match on BOTH sides (no
+// comparison is possible otherwise) — returns neutral 1 when there isn't.
+const PLAYER_HA_PRIOR_K = 3;
+const PLAYER_HA_FACTOR_MIN = 0.9, PLAYER_HA_FACTOR_MAX = 1.15;
+function playerHomeAwayFactor(recent, isHome){
+  if(!recent || recent.homeMatches<1 || recent.awayMatches<1) return 1;
+  const totalMins = recent.homeMins+recent.awayMins;
+  const totalFouls = recent.homeFouls+recent.awayFouls;
+  if(totalMins<=0) return 1;
+  const overallFp90 = totalFouls/totalMins*90;
+  if(overallFp90<=0) return 1; // no fouls in the whole sample — nothing to split
+  const sideMins = isHome ? recent.homeMins : recent.awayMins;
+  const sideFouls = isHome ? recent.homeFouls : recent.awayFouls;
+  if(sideMins<=0) return 1;
+  const sideFp90 = sideFouls/sideMins*90;
+  const rawRatio = sideFp90/overallFp90;
+  const minMatches = Math.min(recent.homeMatches, recent.awayMatches);
+  const shrink = minMatches/(minMatches+PLAYER_HA_PRIOR_K);
+  const shrunk = 1 + (rawRatio-1)*shrink;
+  return Math.max(PLAYER_HA_FACTOR_MIN, Math.min(PLAYER_HA_FACTOR_MAX, shrunk));
+}
+
+// 2026-09-16 (advanced analytics round 3 — card-model-deep-dive-2026-09-16.md
+// §4 Tier 2 #4, "opponent fouls-drawn multiplier"): the Matchups tab has long
+// paired attackers (ranked by take-ons/duels) against the opposition's most
+// foul-prone defender/midfielder (foulProneDefenders()), but that pairing was
+// always display-only — it never fed cardProb(). This turns that same
+// heuristic into a small, bounded multiplier: a team whose attacking players
+// draw fouls at an above-average rate should make the OPPOSING defenders/
+// markers somewhat more likely to commit one, independent of that defender's
+// own tendencies. Zero new API calls — `fd90` (fouls drawn/90) is already
+// computed for every player at extraction time (see blendPlayerStats()/
+// processPlayers()/buildSqLookup()), well before applyMatchContext() ever
+// runs, so the caller just needs to pass the OPPOSING team's raw (pre-
+// context) player array in.
+//
+// Unlike the referee/league-wide home-away factors, there's no real
+// "league average fd90" available here without a new fetch (nothing already
+// fetched aggregates fd90 league-wide), so OPPONENT_FD90_BASELINE is a fixed
+// empirical prior — the same kind of static, non-recalibrated constant
+// POS_FACTOR already is elsewhere in this file, not something derived from
+// this league's own sample. That makes this the least rigorously-grounded
+// factor in the model so far (flagged honestly in its own UI disclosure
+// line), which is why its clamp is the tightest of any factor.
+const OPPONENT_FD90_BASELINE = 1.3;   // typical fouls-drawn/90 for an attacking (F/M) player — fixed prior, not per-league calibrated
+const OPPONENT_FD_MIN_SAMPLE = 3;     // need at least this many qualifying opposing attackers to say anything
+const OPPONENT_FD_PRIOR_K = 5;
+const OPPONENT_FD_FACTOR_MIN = 0.9, OPPONENT_FD_FACTOR_MAX = 1.15;
+function opponentFoulsDrawnFactor(oppPlayers){
+  const attackers = (oppPlayers||[]).filter(p=>!p.noData && (p.pos==='F'||p.pos==='M') && p.fd90>0);
+  if(attackers.length < OPPONENT_FD_MIN_SAMPLE) return 1;
+  const avgFd90 = attackers.reduce((a,p)=>a+p.fd90,0)/attackers.length;
+  if(avgFd90<=0) return 1;
+  const rawRatio = avgFd90/OPPONENT_FD90_BASELINE;
+  const shrink = attackers.length/(attackers.length+OPPONENT_FD_PRIOR_K);
+  const shrunk = 1 + (rawRatio-1)*shrink;
+  return Math.max(OPPONENT_FD_FACTOR_MIN, Math.min(OPPONENT_FD_FACTOR_MAX, shrunk));
+}
+
+// 2026-09-16 (advanced analytics round 4 — card-model-deep-dive-2026-09-16.md
+// §4 Tier 2 #6, "suspension-threshold context"): counterintuitively, a
+// player sitting one yellow card away from a suspension tends to foul LESS,
+// not more — self-preservation outweighs whatever tactical incentive there
+// is to commit the marginal foul. Research cited in the deep-dive doc (CEPR)
+// puts the effect at roughly a 12% reduction in fouling behaviour one card
+// from a ban, a smaller reduction two cards out, and nothing measurable
+// further away — so this is a downward adjustment, the opposite direction
+// from most of the other factors in this model.
+//
+// API-Football doesn't expose each competition's exact suspension schedule
+// (thresholds vary by competition, and this app's `yc` isn't reliably split
+// per-competition for a player who featured in both league and domestic cup
+// fixtures) — so this uses the same simplified "every 5th accumulated
+// yellow" approximation the existing "One from a ban" badge below already
+// assumed for its first threshold, generalized here to every multiple
+// rather than just the first. Treat this as a reasonable proxy, not an
+// exact reading of any one competition's official suspension count.
+//
+// Unlike every other factor added this session, this isn't continuous
+// empirical-Bayes shrinkage — there's no in-app sample size to shrink
+// toward here. It's two fixed, discrete multipliers taken directly from the
+// cited external effect sizes, applied only exactly 1 or 2 cards from the
+// next assumed threshold; everywhere else it's neutral (1).
+const SUSPENSION_THRESHOLD_STEP = 5;    // simplified approximation of a suspension "band" (5, 10, 15, 20 accumulated yellows...)
+const SUSPENSION_FACTOR_1_AWAY = 0.88;  // ~12% fewer fouls one card from a ban (CEPR figure)
+const SUSPENSION_FACTOR_2_AWAY = 0.94;  // smaller, interpolated reduction two cards out
+function cardsToNextSuspension(yc){
+  if(yc==null || yc<0) return null;
+  const nextThreshold = (Math.floor(yc/SUSPENSION_THRESHOLD_STEP)+1)*SUSPENSION_THRESHOLD_STEP;
+  return nextThreshold - yc;
+}
+function suspensionProximityFactor(yc){
+  const toGo = cardsToNextSuspension(yc);
+  if(toGo===1) return SUSPENSION_FACTOR_1_AWAY;
+  if(toGo===2) return SUSPENSION_FACTOR_2_AWAY;
+  return 1;
+}
+
 // 2026-09-16 (advanced analytics — Tier 1 #3 in card-model-deep-dive-2026-09-16.md):
 // a 0-1 estimate of how likely this player is to actually start/feature
 // significantly, from the exact same recent-form data already fetched —
@@ -1086,12 +1211,32 @@ function startProbabilityFactor(recent){
 // that let a stale referee factor from a PREVIOUS match leak through
 // unchanged (see cardProb()'s comment for the full story).
 // `isHome` selects which side of `_currentHomeAway` applies to this group.
-function applyMatchContext(players, {isHome, recentFormMap=null}={}){
+// `opponentFdFactor` (2026-09-16 round 3): a single number the caller
+// precomputes via opponentFoulsDrawnFactor() from the OPPOSING side's raw
+// player array — only meaningful for defenders/markers (see below), so it's
+// passed in already-computed rather than this function reaching for the
+// opposing array itself (keeps this function's job to "apply factors to
+// THIS group," not "know about the other side").
+function applyMatchContext(players, {isHome, recentFormMap=null, opponentFdFactor=1}={}){
   const hwFactor = isHome ? _currentHomeAway.home : _currentHomeAway.away;
   return players.map(p=>{
     if(p.prob===null || p.foulsMissing || p.noData) return p;
     const recent = recentFormMap ? recentFormMap.get(p.id) : null;
     const recentFactor = recentFormFactor(recent, p.fp90);
+    // 2026-09-16 round 2: this player's OWN home/away split, layered on top
+    // of the league-wide hwFactor above — see playerHomeAwayFactor().
+    const phwFactor = playerHomeAwayFactor(recent, isHome);
+    // 2026-09-16 round 3: only defenders/defensive-midfielders are "markers"
+    // in the foulProneDefenders() sense this factor is modeled on — applying
+    // an opponent's fouls-drawn rate to an attacker wouldn't mean anything
+    // (they're not the one doing the marking), so it stays neutral for them.
+    const oppFdFactor = (p.pos==='D'||p.pos==='M') ? opponentFdFactor : 1;
+    // 2026-09-16 round 4: suspension-threshold context — see
+    // suspensionProximityFactor(), SECTION 4d. Match-independent (depends
+    // only on yc, not on anything about this fixture), but computed here
+    // rather than at extraction time so it's recomputed fresh alongside
+    // everything else and shows up consistently in the UI disclosure below.
+    const suspFactor = suspensionProximityFactor(p.yc);
     // 2026-08-27 (Phase 5): fouls-per-card ratio / hit-rate framing — purely
     // informational context (never feeds cardProb()), so it's attached
     // whenever a usable recent sample exists, independent of whether the
@@ -1105,9 +1250,13 @@ function applyMatchContext(players, {isHome, recentFormMap=null}={}){
       : {};
     return {
       ...p, ...recentExtra,
-      prob: cardProb(p.fp90, p.pos, p.yc, p.apps, recentFactor, _currentRefFactor, hwFactor),
+      prob: cardProb(p.fp90, p.pos, p.yc, p.apps, recentFactor, _currentRefFactor, hwFactor, phwFactor, oppFdFactor, suspFactor),
       recentFormFactor: recentFactor,
       homeAwayFactor: hwFactor,
+      personalHomeAwayFactor: phwFactor,
+      opponentFdFactor: oppFdFactor,
+      suspensionFactor: suspFactor,
+      cardsToSuspension: cardsToNextSuspension(p.yc),
       startProb: recentFormMap ? startProbabilityFactor(recent) : null,
     };
   });
@@ -1210,7 +1359,6 @@ function homeAwayFactorsFromBaseline(baseline){
 // loadMatchContext() and buildOverviewTab() respectively — since they need
 // data (standings, live event count) this function doesn't have.
 const REF_WATCH_FACTOR_MIN = 1.15;  // referee running >=15% hot vs this league's own baseline
-const BAN_WATCH_YC = 4;             // "one yellow from" — see disclaimer in the rendered copy below
 const UPSET_POINTS_GAP = 12;        // league-table points gap that triggers Upset Alert — see loadMatchContext()
 const BOOKING_WATCH_LIVE_CARDS = 3; // cards-so-far threshold for Booking Watch (live) — see buildOverviewTab()
 const BOOKING_WATCH_LIVE_MAX_MIN = 60; // ...only while still inside this many elapsed minutes
@@ -1221,12 +1369,17 @@ function computeCardSignals(){
       label:'Referee to watch',
       detail:`${_currentRefMeta.refereeName} has averaged ${_currentRefMeta.avgCards.toFixed(1)} cards/match this season vs a ${_currentRefMeta.leagueAvgCards.toFixed(1)} league baseline (${_currentRefMeta.sample} matches sampled).`});
   }
+  // 2026-09-16 round 4: generalized from a hardcoded "exactly 4 yellows" to
+  // every assumed threshold multiple via cardsToNextSuspension() (SECTION
+  // 4d) — the same approximation now backing the suspensionProximityFactor()
+  // probability adjustment below, so this badge's copy can reference it
+  // directly instead of the two drifting independently.
   const onTheBrink = [..._saHomePlayers, ..._saAwayPlayers]
-    .filter(p=>p.xistatus==='starter' && !p.noData && !_currentInjuries?.has(p.id) && p.yc===BAN_WATCH_YC);
+    .filter(p=>p.xistatus==='starter' && !p.noData && !_currentInjuries?.has(p.id) && cardsToNextSuspension(p.yc)===1);
   if(onTheBrink.length){
     badges.push({key:'ban', icon:'ti-alert-octagon', cls:'sig-warn',
       label:'One from a ban',
-      detail:`${onTheBrink.map(p=>p.name).join(', ')} — on ${BAN_WATCH_YC} yellow cards this season. Suspension thresholds vary by competition; shown as a general signal, not a guaranteed trigger.`});
+      detail:`${onTheBrink.map(p=>`${p.name} (${p.yc})`).join(', ')} — one yellow card from an assumed suspension threshold this season (approximated at every ${SUSPENSION_THRESHOLD_STEP}th accumulated yellow; actual thresholds vary by competition). Research suggests players in this position tend to foul less, not more, to protect themselves — reflected as a small downward adjustment in their probability below.`});
   }
   return badges;
 }
@@ -2218,8 +2371,16 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
     if(_breakerTripped){document.getElementById('tab-sa').innerHTML=buildRateLimitMessage();return;}
 
     let i=0;
-    const hStartP = applyMatchContext(starterResults.slice(i,i+=hStarters.length),{isHome:true}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-    const aStartP = applyMatchContext(starterResults.slice(i,i+=aStarters.length),{isHome:false}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+    const hRawStart = starterResults.slice(i,i+=hStarters.length);
+    const aRawStart = starterResults.slice(i,i+=aStarters.length);
+    // 2026-09-16 round 3: opponent fouls-drawn factor, from each other's RAW
+    // (pre-context) extracted stats — already carry fd90, no new fetch. See
+    // opponentFoulsDrawnFactor(), SECTION 4d. Reused for bench below (Phase
+    // 2) since the opponent's identity hasn't changed.
+    const hOppFd = opponentFoulsDrawnFactor(aRawStart);
+    const aOppFd = opponentFoulsDrawnFactor(hRawStart);
+    const hStartP = applyMatchContext(hRawStart,{isHome:true,opponentFdFactor:hOppFd}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+    const aStartP = applyMatchContext(aRawStart,{isHome:false,opponentFdFactor:aOppFd}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
     // Render starters immediately so users have data to read
     const hP = [...hStartP], aP = [...aStartP];
@@ -2236,8 +2397,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
       if(!_breakerTripped){
         let j=0;
-        const hBenchP = applyMatchContext(benchResults.slice(j,j+=hBench.length),{isHome:true}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-        const aBenchP = applyMatchContext(benchResults.slice(j,j+=aBench.length),{isHome:false}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+        const hBenchP = applyMatchContext(benchResults.slice(j,j+=hBench.length),{isHome:true,opponentFdFactor:hOppFd}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+        const aBenchP = applyMatchContext(benchResults.slice(j,j+=aBench.length),{isHome:false,opponentFdFactor:aOppFd}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
         hP.push(...hBenchP); aP.push(...aBenchP);
         _saHomePlayers=hP; _saAwayPlayers=aP;
         // Only update the analysis tab if it's currently visible
@@ -2272,8 +2433,11 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       const results = await fetchPlayersThrottled(allPlayers, seasonChain);
       if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
 
-      const hP = applyMatchContext(results.slice(0, hSquadPlayers.length),{isHome:true}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-      const aP = applyMatchContext(results.slice(hSquadPlayers.length),{isHome:false}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const hRawSquad = results.slice(0, hSquadPlayers.length);
+      const aRawSquad = results.slice(hSquadPlayers.length);
+      const hOppFd = opponentFoulsDrawnFactor(aRawSquad), aOppFd = opponentFoulsDrawnFactor(hRawSquad);
+      const hP = applyMatchContext(hRawSquad,{isHome:true,opponentFdFactor:hOppFd}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aP = applyMatchContext(aRawSquad,{isHome:false,opponentFdFactor:aOppFd}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
       if(_breakerTripped){
         document.getElementById('tab-sa').innerHTML = buildRateLimitMessage();
@@ -2302,8 +2466,11 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         fetchTeamIntl(aId, fx.teams.away.name),
       ]);
       if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
-      const hP = applyMatchContext(processPlayers(hR?.response||[]),{isHome:true}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-      const aP = applyMatchContext(processPlayers(aR?.response||[]),{isHome:false}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const hRawIntl = processPlayers(hR?.response||[]);
+      const aRawIntl = processPlayers(aR?.response||[]);
+      const hOppFd = opponentFoulsDrawnFactor(aRawIntl), aOppFd = opponentFoulsDrawnFactor(hRawIntl);
+      const hP = applyMatchContext(hRawIntl,{isHome:true,opponentFdFactor:hOppFd}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aP = applyMatchContext(aRawIntl,{isHome:false,opponentFdFactor:aOppFd}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
       // If both come back empty, the request was blocked — show a clear diagnostic
       if(!hP.length && !aP.length){
@@ -2377,8 +2544,12 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       if(_breakerTripped){document.getElementById('tab-sa').innerHTML=buildRateLimitMessage();return;}
 
       let i=0;
-      const hStartP=applyMatchContext(sRes.slice(i,i+=hStarters.length),{isHome:true,recentFormMap}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-      const aStartP=applyMatchContext(sRes.slice(i,i+=aStarters.length),{isHome:false,recentFormMap}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const hRawStart = sRes.slice(i,i+=hStarters.length);
+      const aRawStart = sRes.slice(i,i+=aStarters.length);
+      const hOppFd = opponentFoulsDrawnFactor(aRawStart);
+      const aOppFd = opponentFoulsDrawnFactor(hRawStart);
+      const hStartP=applyMatchContext(hRawStart,{isHome:true,recentFormMap,opponentFdFactor:hOppFd}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aStartP=applyMatchContext(aRawStart,{isHome:false,recentFormMap,opponentFdFactor:aOppFd}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
       const hP=[...hStartP], aP=[...aStartP];
       _saHomePlayers=hP; _saAwayPlayers=aP;
@@ -2391,8 +2562,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
         if(!_breakerTripped){
           let j=0;
-          const hBenchP=applyMatchContext(bRes.slice(j,j+=hBench.length),{isHome:true,recentFormMap}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-          const aBenchP=applyMatchContext(bRes.slice(j,j+=aBench.length),{isHome:false,recentFormMap}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+          const hBenchP=applyMatchContext(bRes.slice(j,j+=hBench.length),{isHome:true,recentFormMap,opponentFdFactor:hOppFd}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+          const aBenchP=applyMatchContext(bRes.slice(j,j+=aBench.length),{isHome:false,recentFormMap,opponentFdFactor:aOppFd}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
           hP.push(...hBenchP); aP.push(...aBenchP);
           _saHomePlayers=hP; _saAwayPlayers=aP;
           document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:true,lineupsDerived,hStarters:hStartP.length,aStarters:aStartP.length,blend,seasonChain});
@@ -2458,8 +2629,10 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       const hALk=buildSqLookup(hAl),aALk=buildSqLookup(aAl);
       const dedup=lk=>[...lk.byName.values()].filter((p,i,a)=>a.findIndex(x=>x.id===p.id)===i&&!p.noData);
       const mH=new Map([...hALk.byName,...hLk.byName]),mA=new Map([...aALk.byName,...aLk.byName]);
-      const hP=applyMatchContext(dedup({byName:mH}),{isHome:true}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-      const aP=applyMatchContext(dedup({byName:mA}),{isHome:false}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const hRawDedup = dedup({byName:mH}), aRawDedup = dedup({byName:mA});
+      const hOppFd = opponentFoulsDrawnFactor(aRawDedup), aOppFd = opponentFoulsDrawnFactor(hRawDedup);
+      const hP=applyMatchContext(hRawDedup,{isHome:true,opponentFdFactor:hOppFd}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aP=applyMatchContext(aRawDedup,{isHome:false,opponentFdFactor:aOppFd}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
       document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:false,hStarters:0,aStarters:0,blend,seasonChain:blend?[altSeason,selSeason]:[selSeason]});
       _saHomePlayers=hP; _saAwayPlayers=aP;
       renderMatchupsTab(fx,ht,at);
@@ -3959,14 +4132,14 @@ function calcExpectedCards(players){
 // applyMatchContext() (SECTION 4d) is now the one place that always
 // recomputes prob fresh for the CURRENT match's referee/home-away/
 // recent-form factors, unconditionally, every render.
-function cardProb(fp90,pos,yc,apps,recentFactor=1,refFactor=1,homeAwayFactor=1){
+function cardProb(fp90,pos,yc,apps,recentFactor=1,refFactor=1,homeAwayFactor=1,personalHomeAwayFactor=1,opponentFdFactor=1,suspensionFactor=1){
   const pf=POS_FACTOR[pos]||1.0;
-  // refFactor, homeAwayFactor and recentFactor all only scale the
-  // foul-based half of λ, not the historical-rate half — none of them
-  // rewrite a player's career card history, and as a player's own sample
-  // size grows (w→1) their history correctly dominates over all three
-  // adjustments anyway.
-  const foulBased=fp90*0.12*pf*refFactor*homeAwayFactor*recentFactor;
+  // refFactor, homeAwayFactor, personalHomeAwayFactor, opponentFdFactor,
+  // suspensionFactor and recentFactor all only scale the foul-based half of
+  // λ, not the historical-rate half — none of them rewrite a player's
+  // career card history, and as a player's own sample size grows (w→1)
+  // their history correctly dominates over all six adjustments anyway.
+  const foulBased=fp90*0.12*pf*refFactor*homeAwayFactor*personalHomeAwayFactor*opponentFdFactor*suspensionFactor*recentFactor;
   const hist=apps>0?yc/apps:0;
   const w=Math.min(apps/20,1);
   const lambda=foulBased*(1-w)+hist*w;
@@ -4164,7 +4337,21 @@ function buildSaCard(p,isIntl,src){
   // homeAwayFactorsFromBaseline(), SECTION 4c-ii.
   const hwFactor = p.homeAwayFactor || 1;
   const hwApplied = hwFactor!==1;
-  const foulLambda = (p.fp90*0.12*posFactor*refFactor*hwFactor*recentFactor).toFixed(3);
+  // 2026-09-16 round 2: this player's OWN home/away split, separate from
+  // the league-wide hwFactor above — see playerHomeAwayFactor(), SECTION 4d.
+  const phwFactor = p.personalHomeAwayFactor || 1;
+  const phwApplied = phwFactor!==1;
+  // 2026-09-16 round 3: opponent fouls-drawn factor — see
+  // opponentFoulsDrawnFactor()/applyMatchContext(), SECTION 4d. Only ever
+  // non-1 for defenders/midfielders (the "marker" cohort).
+  const oppFdFactor = p.opponentFdFactor || 1;
+  const oppFdApplied = oppFdFactor!==1;
+  // 2026-09-16 round 4: suspension-threshold context — see
+  // suspensionProximityFactor()/applyMatchContext(), SECTION 4d. Always a
+  // reduction (<1) when applied, never an increase.
+  const suspFactor = p.suspensionFactor || 1;
+  const suspApplied = suspFactor!==1;
+  const foulLambda = (p.fp90*0.12*posFactor*refFactor*hwFactor*phwFactor*oppFdFactor*suspFactor*recentFactor).toFixed(3);
   const histRate = p.apps>0 ? (p.yc/p.apps).toFixed(3) : '0.000';
   const weight = Math.min(p.apps/20,1).toFixed(2);
   const blendedLambda = p.prob!==null ? (-Math.log(1-Math.min(p.prob,0.9499))).toFixed(3) : '—';
@@ -4187,11 +4374,14 @@ function buildSaCard(p,isIntl,src){
     ${p.recentMatches?`<div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Recent form</span><b>Carded in ${Math.round(p.recentMatches*p.recentHitRate)} of last ${p.recentMatches} matches (${(p.recentHitRate*100).toFixed(0)}%)${p.recentFoulsPerCard?` · ${p.recentFoulsPerCard.toFixed(1)} fouls/card recently`:''}</b></div>`:''}
     ${p.foulsMissing?'':
     `<div class="sa-ex-formula">
-      <div>FC/90 <span class="val">${p.fp90.toFixed(2)}</span> × pos.factor <span class="val">${posFactor}</span> (${p.posL}) × 0.12${refApplied?` × ref.factor <span class="val">${refFactor.toFixed(2)}</span>`:''}${hwApplied?` × home/away <span class="val">${hwFactor.toFixed(2)}</span>`:''}${recentApplied?` × recent.factor <span class="val">${recentFactor.toFixed(2)}</span>`:''} = λ<sub>foul</sub> <span class="val">${foulLambda}</span></div>
+      <div>FC/90 <span class="val">${p.fp90.toFixed(2)}</span> × pos.factor <span class="val">${posFactor}</span> (${p.posL}) × 0.12${refApplied?` × ref.factor <span class="val">${refFactor.toFixed(2)}</span>`:''}${hwApplied?` × home/away <span class="val">${hwFactor.toFixed(2)}</span>`:''}${phwApplied?` × own home/away <span class="val">${phwFactor.toFixed(2)}</span>`:''}${oppFdApplied?` × opp.FD factor <span class="val">${oppFdFactor.toFixed(2)}</span>`:''}${suspApplied?` × susp.factor <span class="val">${suspFactor.toFixed(2)}</span>`:''}${recentApplied?` × recent.factor <span class="val">${recentFactor.toFixed(2)}</span>`:''} = λ<sub>foul</sub> <span class="val">${foulLambda}</span></div>
       <div>YC rate <span class="val">${histRate}</span> /game · blend weight <span class="val">${weight}</span> (${p.apps} apps / 20)</div>
       <div>Blended λ <span class="${cls}">${blendedLambda}</span> → P(YC) = 1 − e<sup>−λ</sup> = <span class="${cls}">${pct}%</span></div>
       ${refApplied?`<div style="color:var(--dim);font-size:10px">Ref factor ${refFactor.toFixed(2)}× from ${_currentRefMeta.refereeName}'s ${_currentRefMeta.sample}-match card rate this season</div>`:''}
       ${hwApplied?`<div style="color:var(--dim);font-size:10px">Home/away factor ${hwFactor.toFixed(2)}× — ${hwFactor>1?'away':'home'} teams have averaged more cards in this league this season (${_currentHomeAway.sample} matches sampled)</div>`:''}
+      ${phwApplied?`<div style="color:var(--dim);font-size:10px">Own home/away factor ${phwFactor.toFixed(2)}× — this player personally fouls ${phwFactor>1?'more':'less'} than their own recent average in this fixture's home/away context, based on their own last ${RECENT_FORM_MATCHES} matches (separate from the league-wide home/away effect above)</div>`:''}
+      ${oppFdApplied?`<div style="color:var(--dim);font-size:10px">Opponent fouls-drawn factor ${oppFdFactor.toFixed(2)}× — the opposition's attacking players draw fouls ${oppFdFactor>1?'more':'less'} than a typical attacking cohort, a heuristic estimate (not this league's own calibrated average)</div>`:''}
+      ${suspApplied?`<div style="color:var(--dim);font-size:10px">Suspension-proximity factor ${suspFactor.toFixed(2)}× — on ${p.yc} yellow cards, ${p.cardsToSuspension} from an assumed suspension threshold (approximated every ${SUSPENSION_THRESHOLD_STEP}th card); research shows players self-regulate their fouling when this close to a ban</div>`:''}
       ${recentApplied?`<div style="color:var(--dim);font-size:10px">Recent-form factor ${recentFactor.toFixed(2)}× — fouling ${recentFactor>1?'more':'less'} than usual over their last ${RECENT_FORM_MATCHES} matches</div>`:''}
     </div>`}
     ${p.foulsMissing?`<div class="sa-ex-warn">Foul data unavailable for this competition — not all leagues and tournaments are tracked. Card probability cannot be calculated.</div>`:''}
