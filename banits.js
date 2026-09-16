@@ -2316,9 +2316,36 @@ async function fetchPlayersThrottled(players, seasons, onProgress=null, opts={})
   // includes a "confirmed empty" first response too (see fetchOne()'s note
   // above), not just a real fetch failure, since a fringe/rotation player
   // reported blank on the first ask can genuinely have real data on retry.
-  const retryIdx = results.map((r,i)=>r?.retryable?i:-1).filter(i=>i>=0);
-  if(retryIdx.length && !_breakerTripped){
-    await new Promise(res=>setTimeout(res,500)); // let the queue fully drain first
+  //
+  // 2026-09-05: a SINGLE extra attempt after one fixed 500ms pause wasn't
+  // always enough — reported live: some match views still needed up to ~15
+  // manual reloads before every player loaded, occasionally never
+  // completing at all. Root cause, confirmed by hitting the live Worker
+  // directly during this investigation: API-Football can return a
+  // `{"errors":{"rateLimit":"..."}}` rejection in a genuine burst even on a
+  // healthy paid plan with the large majority of its per-minute quota still
+  // unused (observed: a rejection followed, ~1.5s later, by a successful
+  // call reporting 295/300 requests still remaining that minute) — i.e. a
+  // short-burst/concurrency sub-limit API-Football enforces on top of the
+  // per-minute number this app can actually measure from response headers.
+  // A cold match view's fixture-context + referee/calibration history +
+  // every starter/bench player's own call, all landing close together, is
+  // exactly the shape that trips this — and a blip like this can easily
+  // outlast one 500ms pause + one retry attempt, especially if a live
+  // match's own 30s background refresh injects more calls into the same
+  // queue while the burst is still draining. Manually reloading the page
+  // "worked" only because the reload's queue was shorter (most calls were
+  // already cache-warm) and pure luck of timing — not because anything was
+  // actually fixed. This now keeps retrying, with increasing gaps between
+  // rounds, until either every player resolves or the budget below is
+  // exhausted — reproducing the "just wait and try again" recovery a manual
+  // reload gave, automatically and repeatedly, instead of asking the user
+  // to do it by hand every time.
+  const RETRY_ROUND_DELAYS_MS = [800, 2000, 4500, 9000]; // ~16s total worst case, only spent if failures persist
+  for(const delayMs of RETRY_ROUND_DELAYS_MS){
+    const retryIdx = results.map((r,i)=>r?.retryable?i:-1).filter(i=>i>=0);
+    if(!retryIdx.length || _breakerTripped) break; // nothing left to retry, or a real sustained outage — stop early either way
+    await new Promise(res=>setTimeout(res,delayMs)); // let the queue fully drain / the burst limit clear before trying again
     await Promise.all(retryIdx.map(async i=>{
       const r = await fetchOne(players[i]);
       results[i] = r;
@@ -2835,59 +2862,77 @@ function gridXY(grid,formation){
   return{x:xPct,y:yPct};
 }
 
-// Build a name→stats lookup from season analysis results.
-// Matches on last name since lineup names ("L. Messi") vs season names ("Lionel Messi") can differ.
-// 2026-08-27 (follow-up #16): strips any surname key that belongs to more
-// than one player before returning — previously "last write wins" meant two
-// players sharing a surname (not rare in football) would silently swap each
-// other's card%/fouls/photo on the pitch overlay whenever a lookup missed
-// the full-name key (e.g. lineup gives a short/initialed name that doesn't
-// exactly match the season-stats source's full name). An ambiguous surname
-// now correctly falls through to "no match" instead of confidently
-// returning the wrong player.
+// Build a player lookup from season analysis results, for the Lineups tab's
+// pitch overlay to match against the raw lineup's startXI/substitutes
+// entries.
+// 2026-09-05: matching used to be name-string-only (surname, or full name as
+// a fallback) — but the season-stats objects in _saHomePlayers/_saAwayPlayers
+// get their `.name` from a DIFFERENT API-Football endpoint (`/players?id=`)
+// than the lineup's own `.player.name` (`/fixtures?id=`'s lineups array),
+// and the two don't always agree on formatting for the same real person
+// (e.g. "Rodrigo Bentancur" vs "R. Bentancur", accented vs unaccented). When
+// they disagreed, the pitch overlay's name lookup missed entirely — the
+// player had real data (visible correctly in the Analysis tab, which never
+// needed to re-match by name: it's built directly from the same ID-keyed
+// fetch) but showed as blank on the pitch. Every player object on both
+// sides carries the same numeric API-Football player id regardless of name
+// formatting, so lookups are now keyed by id first — name/surname matching
+// is kept only as a fallback for any path that might not carry an id.
+// 2026-08-27 (follow-up #16): the surname-only fallback still strips any
+// surname claimed by 2+ players before returning — see _dropAmbiguousSurnames.
 function _dropAmbiguousSurnames(map, surnameCounts){
   for(const last in surnameCounts){
     if(surnameCounts[last]>1) delete map[last];
   }
 }
 function statsLookup(players){
-  const map={}, surnameCounts={};
+  const byId={}, byName={}, surnameCounts={};
   for(const p of players||[]){
     if(!p||p.noData)continue;
+    if(p.id!=null) byId[p.id]=p;
     const last=p.name.split(' ').pop().toLowerCase();
     surnameCounts[last]=(surnameCounts[last]||0)+1;
-    map[last]=p;
-    map[p.name.toLowerCase()]=p;
+    byName[last]=p;
+    byName[p.name.toLowerCase()]=p;
   }
-  _dropAmbiguousSurnames(map, surnameCounts);
-  return map;
+  _dropAmbiguousSurnames(byName, surnameCounts);
+  return {byId, byName};
 }
 
 // Like statsLookup but includes noData players — photo is returned by
 // /players/squads regardless of whether club stats were found.
 function photoLookup(players){
-  const map={}, surnameCounts={};
+  const byId={}, byName={}, surnameCounts={};
   for(const p of players||[]){
     if(!p)continue;
+    if(p.id!=null) byId[p.id]=p;
     const last=p.name.split(' ').pop().toLowerCase();
     surnameCounts[last]=(surnameCounts[last]||0)+1;
-    map[last]=p;
-    map[p.name.toLowerCase()]=p;
+    byName[last]=p;
+    byName[p.name.toLowerCase()]=p;
   }
-  _dropAmbiguousSurnames(map, surnameCounts);
-  return map;
+  _dropAmbiguousSurnames(byName, surnameCounts);
+  return {byId, byName};
 }
 
-function photoFor(name, lookup){
-  if(!lookup)return null;
-  const p = lookup[name.toLowerCase()] || lookup[name.split(' ').pop().toLowerCase()];
+// lineupPlayer is the raw `{id,name,...}` object from a lineup entry
+// (startXI/substitutes' `.player`) — looks up by id first, falling back to
+// name/surname matching only when no id match is found.
+function _lookupPlayer(lineupPlayer, lookup){
+  if(!lookup || !lineupPlayer) return null;
+  if(lineupPlayer.id!=null && lookup.byId[lineupPlayer.id]) return lookup.byId[lineupPlayer.id];
+  const name = lineupPlayer.name||'';
+  return lookup.byName[name.toLowerCase()] || lookup.byName[name.split(' ').pop().toLowerCase()] || null;
+}
+
+function photoFor(lineupPlayer, lookup){
+  const p = _lookupPlayer(lineupPlayer, lookup);
   return p?.photo || null;
 }
 
 // Returns {value, label, color} for the current overlay mode, or null if no data.
-function pitchStatFor(name, lookup){
-  if(!lookup)return null;
-  const p = lookup[name.toLowerCase()] || lookup[name.split(' ').pop().toLowerCase()];
+function pitchStatFor(lineupPlayer, lookup){
+  const p = _lookupPlayer(lineupPlayer, lookup);
   if(!p || p.noData) return null;
   if(_pitchStatMode==='cards'){
     if(p.foulsMissing||p.prob===null)return null;
@@ -3004,8 +3049,8 @@ function buildPitch(lineup,subMap,col,lookup,photoLk,evLk){
     const subTime=ev?.sub?.time || (sub?.time?sub.time+"'":'');
     const subRepl=ev?.sub?.repl || sub?.replacedBy || '';
     const lastName=name.split(' ').pop()||name;
-    const stat=pitchStatFor(name,lookup);
-    const photo=photoFor(name,photoLk);
+    const stat=pitchStatFor(p.player,lookup);
+    const photo=photoFor(p.player,photoLk);
     return`<div class="pp" style="left:${xy.x}%;top:${xy.y}%">
       <div class="pp-circ${sOff?' sub-off':''}" style="${sOff?'':'border-color:'+col+';'}">
         <span class="pp-num">${num}</span>
@@ -3028,7 +3073,7 @@ function buildPitch(lineup,subMap,col,lookup,photoLk,evLk){
     const cameon=ev?.sub?.in || !!subMap[name]?.in;
     const subTime=ev?.sub?.time || (subMap[name]?.time?subMap[name].time+"'":'');
     const subRepl=ev?.sub?.repl || subMap[name]?.replacementOf||'';
-    const photo=photoFor(name,photoLk);
+    const photo=photoFor(p.player,photoLk);
     return`<div class="pp-sub-row${cameon?' pp-sub-on':''}">
       <div class="pp-sub-num" style="color:${col}">${num}</div>
       ${photo?`<img src="${photo}" alt="" class="pp-sub-photo" loading="lazy" onerror="this.remove()">`
