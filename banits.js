@@ -51,6 +51,13 @@ let _currentRefFactor = 1;   // multiplier applied to the foul-based half of car
 let _currentRefMeta = null;  // {factor, sample, avgCards, leagueAvgCards} | null — for UI disclosure
 let _currentInjuries = new Map(); // playerId → {type,reason} for the currently-open fixture — see getInjuries()
 let _currentSidelined = {home:[], away:[]}; // long-term absentees for the two teams in the currently-open fixture — see getSidelined()
+// 2026-09-16: {home,away} multipliers on the foul-based half of λ, derived
+// from this league's own real home-vs-away card split this season — see
+// homeAwayFactorsFromBaseline(). Same shape/safeguards as _currentRefFactor
+// (defaults to neutral 1x, reset on every view change) — separate globals
+// because, unlike the referee factor, this one differs per side of the
+// match, so applyMatchContext() picks .home or .away per player group.
+let _currentHomeAway = {home:1, away:1, sample:0};
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 2 — TEAM COLOURS
@@ -736,6 +743,13 @@ const _refCache = new Map(); // `${ref}_${leagueId}_${season}` → result
 // sampled by one feature (or previously opened directly by the user) isn't
 // re-fetched by the other — real savings once a session's been running a
 // while, on top of the rate-limiter fix below which is the main one.
+// 2026-09-16: now returns the {home,away} split, not just a total — reused
+// by the new getHomeAwayFactor() (via getLeagueCardBaseline() below) to
+// derive a real, current, league-specific home/away card ratio from the
+// EXACT SAME fixture-detail fetches getRefereeFactor()/getLeagueCardBaseline()
+// already make for their own purposes. Zero new API calls: this just reads
+// one more field off a response already being fetched and cached. Callers
+// that only want the total (getRefereeFactor()) sum `.total`.
 async function getHistoricalCardCount(fx){
   const fid = fx.fixture.id;
   let d = _fixtureDetailCache.get(fid) || lsGet('banits_fx_'+fid);
@@ -746,7 +760,10 @@ async function getHistoricalCardCount(fx){
     _fixtureDetailCache.set(fid, d); // warm the in-memory cache from the localStorage hit
   }
   const events = d?.response?.[0]?.events || [];
-  return events.filter(e=>e.type==='Card').length;
+  const cardEvents = events.filter(e=>e.type==='Card');
+  const hId = fx.teams?.home?.id;
+  const home = hId!=null ? cardEvents.filter(e=>e.team?.id===hId).length : 0;
+  return { total: cardEvents.length, home, away: cardEvents.length-home };
 }
 
 // 2026-08-27 (follow-up #16, quick win): getRefereeFactor() and
@@ -809,8 +826,23 @@ function refSurname(raw){
   return cand;
 }
 
+// 2026-09-16: also returns `homeAway` — the home/away officiating factor
+// (see homeAwayFactorsFromBaseline(), SECTION 4c-ii) computed from the
+// SAME fixture sample this function already fetches for its own purpose
+// (up to REF_SAMPLE_CAP×2 = 16 fixture details). Deliberately piggybacked
+// here rather than sourced from a separate getLeagueCardBaseline() call:
+// an earlier version of this feature fetched that independently, in
+// loadSeasonAnalysis()'s own upfront Promise.all — correct, but it added a
+// second batch of up to 8 fixture-detail fetches competing for the app's
+// paced request queue BEFORE starters even begin fetching, directly
+// working against this session's other fix (reducing how long a cold
+// Analysis-tab load takes). Piggybacking here costs nothing extra when the
+// referee already has enough sample, at the cost of the home/away factor
+// only being available in that same case (below REF_MIN_SAMPLE, both stay
+// neutral) — a real coverage trade-off, noted in
+// card-model-deep-dive-2026-09-16.md, not an oversight.
 async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId){
-  const none = {factor:1, sample:0, avgCards:null, leagueAvgCards:null, refereeName:refereeName||null};
+  const none = {factor:1, sample:0, avgCards:null, leagueAvgCards:null, refereeName:refereeName||null, homeAway:{home:1,away:1,sample:0}};
   if(!refereeName || !leagueId || !season) return none;
   const key = `${refereeName}_${leagueId}_${season}`;
   if(_refCache.has(key)) return _refCache.get(key);
@@ -844,13 +876,23 @@ async function getRefereeFactor(refereeName, leagueId, season, excludeFixtureId)
       Promise.all(baselinePool.map(getHistoricalCardCount)),
     ]);
 
-    const avg = arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
+    // 2026-09-16: getHistoricalCardCount() now returns {total,home,away} —
+    // this function only ever wanted the total, same math as before.
+    const avg = arr => arr.length ? arr.reduce((a,b)=>a+b.total,0)/arr.length : null;
     const refAvg = avg(refCounts), baseAvg = avg(baseCounts);
 
-    let result = {...none, sample:refFixtures.length};
+    // Home/away split from the COMBINED sample (referee's own matches +
+    // baseline matches together — up to 16 fixtures, a broader league-wide
+    // read than either alone) — see the function-level comment above.
+    const allCounts = [...refCounts, ...baseCounts];
+    const homeAvg = allCounts.length ? allCounts.reduce((a,b)=>a+b.home,0)/allCounts.length : null;
+    const awayAvg = allCounts.length ? allCounts.reduce((a,b)=>a+b.away,0)/allCounts.length : null;
+    const homeAway = homeAwayFactorsFromBaseline(homeAvg!=null ? {homeAvg, awayAvg, sample:allCounts.length} : null);
+
+    let result = {...none, sample:refFixtures.length, homeAway};
     if(refAvg!==null && baseAvg!==null && baseAvg>0){
       const factor = Math.max(REF_FACTOR_MIN, Math.min(REF_FACTOR_MAX, refAvg/baseAvg));
-      result = {factor, sample:refFixtures.length, avgCards:refAvg, leagueAvgCards:baseAvg, refereeName};
+      result = {factor, sample:refFixtures.length, avgCards:refAvg, leagueAvgCards:baseAvg, refereeName, homeAway};
     }
     _refCache.set(key, result);
     return result;
@@ -877,6 +919,7 @@ const RECENT_FORM_MATCHES = 5;    // sample each team's last N finished fixtures
 const RECENT_MIN_MINUTES  = 180;  // ~2 full matches — below this, don't trust the recent sample
 const RECENT_FACTOR_MIN   = 0.7;
 const RECENT_FACTOR_MAX   = 1.5;
+const RECENT_DECAY        = 0.85; // 2026-09-16 (advanced analytics): exponential recency weighting — see aggregateTeamRecentForm()
 
 // Shared with loadMatchContext()'s form strip — both want "this team's last
 // 5 finished fixtures", so one promise-keyed cache means whichever of
@@ -943,18 +986,31 @@ function getFixturePlayerBoxes(fid){
 
 // Sums one team's players' minutes/fouls across up to RECENT_FORM_MATCHES
 // of their own last finished fixtures.
+// 2026-09-16 (advanced analytics): also accumulates a RECENCY-WEIGHTED
+// version (wMins/wFouls) — a player's most recent match should count more
+// than one from 5 games ago. `fids` is oldest-first (the existing
+// `.slice(-RECENT_FORM_MATCHES)` above takes the LAST N of an
+// ascending-by-date response), so weight=1 for the most recent sampled
+// fixture (last array index) decaying by RECENT_DECAY per match further
+// back. Only the RATE estimate (recentFormFactor, below) uses the weighted
+// figures — the raw mins/fouls/cards/matches are kept unweighted because
+// they back the existing hit-rate/fouls-per-card DISPLAY stats, which are
+// counts, not a rate, and shouldn't be distorted by decay.
 async function aggregateTeamRecentForm(teamId, formData){
   const fids = (formData?.response||[]).slice(-RECENT_FORM_MATCHES).map(f=>f.fixture?.id).filter(Boolean);
   if(!fids.length) return new Map();
   const boxes = await Promise.all(fids.map(getFixturePlayerBoxes));
-  const agg = new Map(); // playerId → {mins,fouls,cards,matches,cardedMatches}
-  for(const byTeam of boxes){
+  const n = boxes.length;
+  const agg = new Map(); // playerId → {mins,fouls,cards,matches,cardedMatches,wMins,wFouls}
+  boxes.forEach((byTeam, idx) => {
     const teamMap = byTeam?.[teamId];
-    if(!teamMap) continue;
+    if(!teamMap) return;
+    const weight = Math.pow(RECENT_DECAY, n-1-idx); // 1.0 for the most recent fixture in this sample, decaying further back
     for(const [pidStr, v] of Object.entries(teamMap)){
       const pid = Number(pidStr);
-      const cur = agg.get(pid) || {mins:0, fouls:0, cards:0, matches:0, cardedMatches:0};
+      const cur = agg.get(pid) || {mins:0, fouls:0, cards:0, matches:0, cardedMatches:0, wMins:0, wFouls:0};
       cur.mins += v.mins; cur.fouls += v.fouls;
+      cur.wMins += v.mins*weight; cur.wFouls += v.fouls*weight;
       // 2026-08-27 (Phase 5): `cards` may be undefined on a box read from a
       // pre-Phase-5 in-memory promise this same session already resolved
       // before the localStorage key bump above took effect — `||0` keeps
@@ -970,7 +1026,7 @@ async function aggregateTeamRecentForm(teamId, formData){
       if(vCards>0) cur.cardedMatches += 1;
       agg.set(pid, cur);
     }
-  }
+  });
   return agg;
 }
 
@@ -988,25 +1044,54 @@ async function getRecentFormMap(hId, aId){
 // Bounded multiplier on cardProb()'s foul-based term, same shape as the
 // referee factor: ratio of recent fp90 to season fp90, clamped so a thin or
 // wild recent sample can't dominate a full season's signal.
+// 2026-09-16: now uses the recency-weighted wFouls/wMins (see
+// aggregateTeamRecentForm()) instead of a flat sum across the sample, so a
+// player's most recent match counts more than one from RECENT_FORM_MATCHES
+// games back. The RECENT_MIN_MINUTES trust gate still reads the raw
+// (unweighted) minutes total — that's a sample-size floor, not a rate.
 function recentFormFactor(recent, seasonFp90){
   if(!recent || recent.mins < RECENT_MIN_MINUTES || !seasonFp90) return 1;
-  const recentFp90 = recent.fouls/recent.mins*90;
+  const recentFp90 = recent.wMins>0 ? recent.wFouls/recent.wMins*90 : 0;
   const raw = seasonFp90>0 ? recentFp90/seasonFp90 : 1;
   return Math.min(RECENT_FACTOR_MAX, Math.max(RECENT_FACTOR_MIN, raw));
 }
 
+// 2026-09-16 (advanced analytics — Tier 1 #3 in card-model-deep-dive-2026-09-16.md):
+// a 0-1 estimate of how likely this player is to actually start/feature
+// significantly, from the exact same recent-form data already fetched —
+// zero new API calls. Combines how many of the team's last
+// RECENT_FORM_MATCHES fixtures they featured in at all with how long they
+// typically stayed on when they did (discounts a player who shows up a lot
+// but only as a late cameo). Returns null (not 0) when there's no recent
+// sample to judge from at all — callers should treat null as "unknown",
+// not "won't play".
+function startProbabilityFactor(recent){
+  if(!recent || !recent.matches) return null;
+  const appearanceRate = recent.matches / RECENT_FORM_MATCHES;
+  const avgMins = recent.mins / recent.matches;
+  const minutesWeight = Math.min(avgMins/75, 1);
+  return Math.max(0, Math.min(1, appearanceRate*minutesWeight));
+}
+
 // Post-processes an already-resolved player array (season stats already
-// fetched/cached with factor 1 baked in — see fetchPlayersThrottled) to
-// apply each player's recent-form factor. Returns NEW player objects rather
-// than mutating in place, so the shared season-stats cache (reused across
-// every other match this player appears in) never carries a match-specific
-// adjustment.
-function applyRecentForm(players, recentFormMap){
-  if(!recentFormMap || !recentFormMap.size) return players;
+// fetched/cached NEUTRAL — see cardProb()'s 2026-09-16 comment) to apply
+// THIS match's full context: referee factor, home/away factor, and (when a
+// recentFormMap was fetched for this branch) recent-form factor and a
+// start-probability estimate. Returns NEW player objects rather than
+// mutating in place, so the shared season-stats cache (reused across every
+// other match a player appears in) never carries a match-specific
+// adjustment. Unlike the old applyRecentForm() this replaced, prob is
+// ALWAYS recomputed here — never conditionally skipped when a factor
+// happens to equal 1 — because skipping the recompute was exactly the gap
+// that let a stale referee factor from a PREVIOUS match leak through
+// unchanged (see cardProb()'s comment for the full story).
+// `isHome` selects which side of `_currentHomeAway` applies to this group.
+function applyMatchContext(players, {isHome, recentFormMap=null}={}){
+  const hwFactor = isHome ? _currentHomeAway.home : _currentHomeAway.away;
   return players.map(p=>{
     if(p.prob===null || p.foulsMissing || p.noData) return p;
-    const recent = recentFormMap.get(p.id);
-    const factor = recentFormFactor(recent, p.fp90);
+    const recent = recentFormMap ? recentFormMap.get(p.id) : null;
+    const recentFactor = recentFormFactor(recent, p.fp90);
     // 2026-08-27 (Phase 5): fouls-per-card ratio / hit-rate framing — purely
     // informational context (never feeds cardProb()), so it's attached
     // whenever a usable recent sample exists, independent of whether the
@@ -1018,8 +1103,13 @@ function applyRecentForm(players, recentFormMap){
           recentHitRate: recent.cardedMatches/recent.matches,
           recentFoulsPerCard: recent.cards>0 ? recent.fouls/recent.cards : null }
       : {};
-    if(factor===1) return {...p, ...recentExtra};
-    return { ...p, ...recentExtra, prob: cardProb(p.fp90, p.pos, p.yc, p.apps, factor), recentFormFactor: factor };
+    return {
+      ...p, ...recentExtra,
+      prob: cardProb(p.fp90, p.pos, p.yc, p.apps, recentFactor, _currentRefFactor, hwFactor),
+      recentFormFactor: recentFactor,
+      homeAwayFactor: hwFactor,
+      startProb: recentFormMap ? startProbabilityFactor(recent) : null,
+    };
   });
 }
 
@@ -1052,8 +1142,14 @@ async function getLeagueCardBaseline(leagueId, season){
     const sample = all.slice(0, CALIB_SAMPLE_CAP);
     const counts = await Promise.all(sample.map(getHistoricalCardCount));
     if(!counts.length){ _leagueCardCache.set(key,null); return null; }
-    const avgCards = counts.reduce((a,b)=>a+b,0)/counts.length;
-    const result = {avgCards, sample:counts.length};
+    const avgCards = counts.reduce((a,b)=>a+b.total,0)/counts.length;
+    // 2026-09-16: home/away split from the exact same sample — see
+    // getHomeAwayFactor() section below for why this is real, well-
+    // documented signal (home teams get fewer cards, partly a referee/
+    // crowd effect) that cost zero extra API calls to add here.
+    const homeAvg = counts.reduce((a,b)=>a+b.home,0)/counts.length;
+    const awayAvg = counts.reduce((a,b)=>a+b.away,0)/counts.length;
+    const result = {avgCards, homeAvg, awayAvg, sample:counts.length};
     _leagueCardCache.set(key, result);
     return result;
   }catch(e){
@@ -1061,6 +1157,41 @@ async function getLeagueCardBaseline(leagueId, season){
     _leagueCardCache.set(key, null);
     return null;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 4c-ii — HOME/AWAY OFFICIATING FACTOR (2026-09-16, advanced analytics)
+// ═══════════════════════════════════════════════════════════════
+// One of the more robustly replicated findings in football analytics: away
+// teams receive measurably more cards than home teams, and it's partly the
+// referee, not just the players — the effect measurably shrinks in matches
+// played with no crowd (see card-model-deep-dive-2026-09-16.md's sources).
+// The model had zero adjustment for this until now, despite already
+// fetching everything needed to compute it (see getLeagueCardBaseline()
+// above, which now also splits its sample by home/away — no new API calls).
+//
+// Unlike the referee factor's hard REF_MIN_SAMPLE cutoff (do nothing below
+// 3 matches, apply the full clamped swing at 3+), this uses continuous
+// empirical-Bayes shrinkage toward 1 (no adjustment), the same style of
+// idea already used elsewhere in this file for Pick of the Week's
+// `pickScore` ranking. At sample=0 the factor is exactly 1; as `sample`
+// grows it smoothly approaches the raw observed ratio, clamped to a
+// tighter band than the referee factor since this represents a whole
+// league's average tendency (affecting every match) rather than one
+// individual's small sample.
+const HOMEAWAY_PRIOR_K = 10;      // "matches worth" of shrinkage toward neutral
+const HOMEAWAY_FACTOR_MIN = 0.85, HOMEAWAY_FACTOR_MAX = 1.15;
+function homeAwayFactorsFromBaseline(baseline){
+  const none = {home:1, away:1, sample:0};
+  if(!baseline || !baseline.sample || baseline.homeAvg==null || baseline.awayAvg==null || baseline.homeAvg<=0){
+    return {...none, sample:baseline?.sample||0};
+  }
+  const {homeAvg, awayAvg, sample} = baseline;
+  const rawAwayRatio = awayAvg/homeAvg; // >1 means away teams average more cards, matching the research
+  const shrink = sample/(sample+HOMEAWAY_PRIOR_K);
+  const away = Math.max(HOMEAWAY_FACTOR_MIN, Math.min(HOMEAWAY_FACTOR_MAX, 1 + (rawAwayRatio-1)*shrink));
+  const home = Math.max(HOMEAWAY_FACTOR_MIN, Math.min(HOMEAWAY_FACTOR_MAX, 1 + (1/rawAwayRatio-1)*shrink));
+  return {home, away, sample, homeAvg, awayAvg};
 }
 
 // Fire-and-forget: patches #calib-check in place once resolved. Safe to
@@ -1100,6 +1231,130 @@ function computeCardSignals(){
   return badges;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// SECTION 4c-iii — PREDICTION LOG + REAL BACKTEST (2026-09-16)
+// ═══════════════════════════════════════════════════════════════
+// The self-check below is honest that it's NOT a predicted-vs-actual
+// backtest — no history of "what did the model say before this match"
+// existed to check against (see its own comment). This closes that gap,
+// purely client-side, no new infrastructure: every time a PRE-KICKOFF
+// prediction is shown, it's logged to localStorage (capped/pruned, same
+// pattern as the Pick of the Week pool). The next time ANY match view
+// loads, a bounded number of other, older logged fixtures that have since
+// finished get resolved against their real card events and folded into a
+// running Brier score — the standard proper scoring rule for probabilistic
+// predictions (mean squared error between each predicted probability and
+// the 0/1 actual outcome; lower is better, 0 is perfect). Because this
+// model's true base rate is well under 50%, the meaningful comparison
+// isn't against 0 — it's against what a naive "always predict the
+// observed base rate" model would score (base_rate×(1−base_rate)), shown
+// alongside it for honest context.
+const PRED_LOG_CAP = 500;        // capped log of NOT-YET-RESOLVED predictions
+const PRED_RESOLVED_CAP = 1000;  // capped log of RESOLVED (backtested) predictions
+const PRED_RESOLVE_BATCH = 6;    // stale fixtures attempted per call — bounded so this never becomes its own fetch burst
+
+function getPredictionLog(){
+  try{
+    const raw = localStorage.getItem('banits_predlog');
+    const log = raw ? JSON.parse(raw) : [];
+    return Array.isArray(log) ? log : [];
+  }catch(e){ return []; }
+}
+function setPredictionLog(log){
+  try{ localStorage.setItem('banits_predlog', JSON.stringify(log.slice(-PRED_LOG_CAP))); }
+  catch(e){ /* quota exceeded or storage disabled — non-fatal, see note elsewhere in this file */ }
+}
+function getResolvedPredictionLog(){
+  try{
+    const raw = localStorage.getItem('banits_predlog_resolved');
+    const log = raw ? JSON.parse(raw) : [];
+    return Array.isArray(log) ? log : [];
+  }catch(e){ return []; }
+}
+function setResolvedPredictionLog(log){
+  try{ localStorage.setItem('banits_predlog_resolved', JSON.stringify(log.slice(-PRED_RESOLVED_CAP))); }
+  catch(e){}
+}
+
+// Logs every confirmed starter's current prediction for this fixture, the
+// moment the Analysis tab has data for a match that hasn't kicked off yet
+// (status 'NS' — a match already live/finished has already happened, so
+// there's nothing honest left to "predict" about it). Safe to call
+// repeatedly for the same fixture: dedupes by fixture id, replacing
+// (never duplicating) so re-opening the same pre-match view just refreshes
+// the logged numbers.
+function logPredictions(fx, players){
+  try{
+    if(!fx?.fixture?.id || fx.fixture?.status?.short!=='NS') return;
+    const fid = fx.fixture.id;
+    const starters = (players||[]).filter(p=>p.xistatus==='starter' && !p.noData && !p.foulsMissing && p.prob!=null && !_currentInjuries?.has(p.id));
+    if(!starters.length) return;
+    let log = getPredictionLog().filter(e=>e.fid!==fid);
+    for(const p of starters) log.push({fid, playerId:p.id, name:p.name, predictedProb:p.prob, loggedAt:Date.now()});
+    setPredictionLog(log);
+  }catch(e){
+    console.warn('[Banits] prediction logging failed (non-fatal):', e.message);
+  }
+}
+
+// Resolves logged predictions for fixtures that have since finished.
+// Deliberately only ever touches OTHER, older fixtures than the one
+// currently open (a just-opened match is either not started, in which case
+// logPredictions() above just logged it, or it's the very fixture being
+// viewed and isFinal() below would need its OWN detail fetch anyway) — so
+// this is safe to fire unconditionally, non-blocking, from every match
+// view without adding latency to the one the user is actually looking at.
+// Reuses the same finished-fixture cache (`_fixtureDetailCache`/
+// `banits_fx_`) every other historical lookup in this file already uses,
+// so a fixture already sampled by the referee factor or league baseline
+// this session costs nothing extra to resolve here.
+let _resolvingPredictions = false;
+async function resolvePendingPredictions(){
+  if(_resolvingPredictions) return;
+  _resolvingPredictions = true;
+  try{
+    const pending = getPredictionLog();
+    if(!pending.length) return;
+    const fids = [...new Set(pending.map(e=>e.fid))].slice(0, PRED_RESOLVE_BATCH);
+    const resolvedLog = getResolvedPredictionLog();
+    let stillPending = pending;
+    for(const fid of fids){
+      let d = _fixtureDetailCache.get(fid) || lsGet('banits_fx_'+fid);
+      if(!d) d = await afFetch(`/fixtures?id=${fid}`);
+      const status = d?.response?.[0]?.fixture?.status?.short;
+      if(!status || !isFinal(status)) continue; // not finished yet — leave pending, try again on a future call
+      if(d) cacheFixtureDetail(fid, d);
+      const cardedIds = new Set((d?.response?.[0]?.events||[]).filter(e=>e.type==='Card').map(e=>e.player?.id).filter(x=>x!=null));
+      for(const entry of pending.filter(e=>e.fid===fid)){
+        const actual = cardedIds.has(entry.playerId) ? 1 : 0;
+        resolvedLog.push({...entry, actual, resolvedAt:Date.now(), sqErr:(entry.predictedProb-actual)**2});
+      }
+      stillPending = stillPending.filter(e=>e.fid!==fid);
+    }
+    setPredictionLog(stillPending);
+    setResolvedPredictionLog(resolvedLog);
+  }catch(e){
+    console.warn('[Banits] prediction resolution failed (non-fatal):', e.message);
+  }finally{
+    _resolvingPredictions = false;
+  }
+}
+
+// Brier score (mean squared error of predicted probability vs 0/1 actual)
+// over whatever's resolved so far, plus the naive-baseline comparison — a
+// Brier score alone means little without knowing what a no-skill model
+// would score against this same observed base rate.
+const BRIER_MIN_RESOLVED = 20; // too few resolved predictions below this to say anything meaningful
+function getBrierSummary(){
+  const resolved = getResolvedPredictionLog();
+  if(resolved.length < BRIER_MIN_RESOLVED) return null;
+  const n = resolved.length;
+  const brier = resolved.reduce((a,e)=>a+e.sqErr,0)/n;
+  const baseRate = resolved.reduce((a,e)=>a+e.actual,0)/n;
+  const baselineBrier = baseRate*(1-baseRate);
+  return {n, brier, baseRate, baselineBrier, skillVsBaseline: baselineBrier>0 ? (1-brier/baselineBrier) : null};
+}
+
 async function updateCalibrationCheck(fx){
   const el = document.getElementById('calib-check');
   if(!el) return;
@@ -1108,6 +1363,12 @@ async function updateCalibrationCheck(fx){
   // instant starters are loaded) to offer this match's best-ranked starter
   // to the current week's candidate pool. See SECTION 15d for why.
   updatePickOfWeekPool(fx);
+  // 2026-09-16: same checkpoint logs today's pre-kickoff predictions (no-op
+  // once the match has kicked off) and, fire-and-forget, tries to resolve
+  // a batch of OTHER older logged predictions whose fixtures have since
+  // finished — see SECTION 4c-iii above.
+  logPredictions(fx, [..._saHomePlayers, ..._saAwayPlayers]);
+  resolvePendingPredictions();
   const hExp = calcExpectedCards(_saHomePlayers);
   const aExp = calcExpectedCards(_saAwayPlayers);
 
@@ -1123,8 +1384,28 @@ async function updateCalibrationCheck(fx){
   const el2 = document.getElementById('calib-check'); // re-fetch: tab may have re-rendered while awaiting
   const sigEl2 = document.getElementById('match-signals');
   if(!el2){ /* tab gone, nothing to patch */ }
+  // 2026-09-16: real backtest numbers, when there are enough resolved
+  // predictions logged in THIS browser to say anything meaningful — see
+  // SECTION 4c-iii. Deliberately separate from the plausibility check
+  // below rather than replacing it: the two answer different questions
+  // ("is this match's total in a sane range" vs "has this model actually
+  // been accurate"), and the backtest starts empty for every new
+  // browser/device while the plausibility check works immediately. Computed
+  // BEFORE the league-baseline gate below because it doesn't depend on
+  // baseline at all — a league with no finished-match sample yet shouldn't
+  // also hide a backtest that's ready to show.
+  const brierSummary = getBrierSummary();
+  const brierRow = brierSummary ? `<div class="calib-row" style="margin-top:4px">
+      <b>Real backtest</b> — ${brierSummary.n} resolved predictions logged in this browser: Brier score <b>${brierSummary.brier.toFixed(3)}</b> (lower is better) vs <b>${brierSummary.baselineBrier.toFixed(3)}</b> for a no-skill model always predicting this ${(brierSummary.baseRate*100).toFixed(0)}% observed base rate${brierSummary.skillVsBaseline!=null?` — ${brierSummary.skillVsBaseline>=0?'a real improvement':'currently underperforming that baseline'} of <b>${Math.abs(Math.round(brierSummary.skillVsBaseline*100))}%</b>`:''}.
+    </div>` : `<div class="calib-row" style="margin-top:4px;color:var(--dim)">Real backtest: not enough resolved predictions logged in this browser yet (needs ${BRIER_MIN_RESOLVED}+) — builds up automatically as matches you've viewed pre-kickoff finish.</div>`;
   if(!baseline || baseline.sample < 3){
-    if(el2) el2.innerHTML = ''; // not enough league data to say anything useful — stay silent rather than show a hollow box
+    // Not enough league data for the plausibility check, but the backtest
+    // is independent of that — show it alone rather than wiping the box
+    // entirely, and only go fully silent when neither has anything to say.
+    if(el2) el2.innerHTML = brierSummary ? `<div class="calib-box">
+      <div class="calib-hd"><i aria-hidden="true" class="ti ti-chart-dots" style="font-size:10px"></i> Model self-check <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— not enough league data for a range check yet</span></div>
+      ${brierRow}
+    </div>` : '';
     renderMatchSignals(sigEl2, cardBadges);
     return;
   }
@@ -1133,6 +1414,7 @@ async function updateCalibrationCheck(fx){
   if(el2) el2.innerHTML = `<div class="calib-box${withinRange?'':' calib-box-warn'}">
     <div class="calib-hd"><i aria-hidden="true" class="ti ti-chart-dots" style="font-size:10px"></i> Model self-check <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">— not a predictive-accuracy backtest, see note</span></div>
     <div class="calib-row">This match's model total (<b>${modelTotal.toFixed(1)}</b>) vs this league's actual average of <b>${baseline.avgCards.toFixed(1)}</b> cards/match (last ${baseline.sample} finished matches) — ${diffPct>=0?'+':''}${diffPct}% ${withinRange?'· within a plausible range':'· notably outside the recent league range, worth a sanity check'}.</div>
+    ${brierRow}
   </div>`;
 
   // Powder Keg — the model's own combined total is notably ABOVE this
@@ -1332,7 +1614,7 @@ async function openMatch(fid){
   // Reset to neutral immediately so a previous match's referee adjustment
   // (or injury list) can never leak into this one while its own lookup is
   // still in flight.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]}; _currentHomeAway = {home:1, away:1, sample:0};
   // Keep the URL shareable — replaceState so opening matches doesn't spam
   // browser back/forward history, just reflects "this is what's open now".
   try{ history.replaceState(null, '', matchLinkFor(fid)); }catch(e){}
@@ -1881,6 +2163,10 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
   // Injuries fetched alongside referee tendency — independent lookups, no
   // reason to serialize them. Whichever finishes last, both are resolved
   // before any player card below is built, exactly like the referee factor.
+  // 2026-09-16: _currentHomeAway now comes from refInfo.homeAway — see
+  // getRefereeFactor()'s 2026-09-16 comment for why this piggybacks on its
+  // sample instead of an independent fetch (avoids adding a second batch
+  // of blocking fixture-detail calls ahead of the starters fetch).
   const [refInfo, injuredMap] = await Promise.all([
     getRefereeFactor(fx.fixture?.referee, fx.league?.id, fx.league?.season, fx.fixture?.id),
     getInjuries(fx.fixture?.id),
@@ -1889,6 +2175,7 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
   _currentRefFactor = refInfo.factor;
   _currentRefMeta = refInfo;
   _currentInjuries = injuredMap;
+  _currentHomeAway = refInfo.homeAway || {home:1, away:1, sample:0};
 
   const isIntl = INTL_LEAGUES.has(fx.league?.id);
   // 2026-08-28 (Bug B fix): effectiveLineups() transparently substitutes a
@@ -1931,8 +2218,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
     if(_breakerTripped){document.getElementById('tab-sa').innerHTML=buildRateLimitMessage();return;}
 
     let i=0;
-    const hStartP = starterResults.slice(i,i+=hStarters.length).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-    const aStartP = starterResults.slice(i,i+=aStarters.length).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+    const hStartP = applyMatchContext(starterResults.slice(i,i+=hStarters.length),{isHome:true}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+    const aStartP = applyMatchContext(starterResults.slice(i,i+=aStarters.length),{isHome:false}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
     // Render starters immediately so users have data to read
     const hP = [...hStartP], aP = [...aStartP];
@@ -1949,8 +2236,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
       if(!_breakerTripped){
         let j=0;
-        const hBenchP = benchResults.slice(j,j+=hBench.length).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-        const aBenchP = benchResults.slice(j,j+=aBench.length).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+        const hBenchP = applyMatchContext(benchResults.slice(j,j+=hBench.length),{isHome:true}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+        const aBenchP = applyMatchContext(benchResults.slice(j,j+=aBench.length),{isHome:false}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
         hP.push(...hBenchP); aP.push(...aBenchP);
         _saHomePlayers=hP; _saAwayPlayers=aP;
         // Only update the analysis tab if it's currently visible
@@ -1985,8 +2272,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       const results = await fetchPlayersThrottled(allPlayers, seasonChain);
       if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
 
-      const hP = results.slice(0, hSquadPlayers.length).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-      const aP = results.slice(hSquadPlayers.length).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const hP = applyMatchContext(results.slice(0, hSquadPlayers.length),{isHome:true}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aP = applyMatchContext(results.slice(hSquadPlayers.length),{isHome:false}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
       if(_breakerTripped){
         document.getElementById('tab-sa').innerHTML = buildRateLimitMessage();
@@ -2015,8 +2302,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         fetchTeamIntl(aId, fx.teams.away.name),
       ]);
       if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
-      const hP = processPlayers(hR?.response||[]);
-      const aP = processPlayers(aR?.response||[]);
+      const hP = applyMatchContext(processPlayers(hR?.response||[]),{isHome:true}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aP = applyMatchContext(processPlayers(aR?.response||[]),{isHome:false}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
       // If both come back empty, the request was blocked — show a clear diagnostic
       if(!hP.length && !aP.length){
@@ -2090,8 +2377,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
       if(_breakerTripped){document.getElementById('tab-sa').innerHTML=buildRateLimitMessage();return;}
 
       let i=0;
-      const hStartP=applyRecentForm(sRes.slice(i,i+=hStarters.length),recentFormMap).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-      const aStartP=applyRecentForm(sRes.slice(i,i+=aStarters.length),recentFormMap).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const hStartP=applyMatchContext(sRes.slice(i,i+=hStarters.length),{isHome:true,recentFormMap}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aStartP=applyMatchContext(sRes.slice(i,i+=aStarters.length),{isHome:false,recentFormMap}).map(p=>({...p,xistatus:'starter'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
 
       const hP=[...hStartP], aP=[...aStartP];
       _saHomePlayers=hP; _saAwayPlayers=aP;
@@ -2104,8 +2391,8 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
         if(_activeId!==fid) return; // stale — see fid guard note at the top of this function
         if(!_breakerTripped){
           let j=0;
-          const hBenchP=applyRecentForm(bRes.slice(j,j+=hBench.length),recentFormMap).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
-          const aBenchP=applyRecentForm(bRes.slice(j,j+=aBench.length),recentFormMap).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+          const hBenchP=applyMatchContext(bRes.slice(j,j+=hBench.length),{isHome:true,recentFormMap}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+          const aBenchP=applyMatchContext(bRes.slice(j,j+=aBench.length),{isHome:false,recentFormMap}).map(p=>({...p,xistatus:'bench'})).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
           hP.push(...hBenchP); aP.push(...aBenchP);
           _saHomePlayers=hP; _saAwayPlayers=aP;
           document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:true,lineupsDerived,hStarters:hStartP.length,aStarters:aStartP.length,blend,seasonChain});
@@ -2169,9 +2456,10 @@ async function loadSeasonAnalysis(hId,aId,fx,ht,at){
 
       const hLk=buildSqLookup(hPl),aLk=buildSqLookup(aPl);
       const hALk=buildSqLookup(hAl),aALk=buildSqLookup(aAl);
-      const dedup=lk=>[...lk.byName.values()].filter((p,i,a)=>a.findIndex(x=>x.id===p.id)===i&&!p.noData).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const dedup=lk=>[...lk.byName.values()].filter((p,i,a)=>a.findIndex(x=>x.id===p.id)===i&&!p.noData);
       const mH=new Map([...hALk.byName,...hLk.byName]),mA=new Map([...aALk.byName,...aLk.byName]);
-      const hP=dedup({byName:mH}),aP=dedup({byName:mA});
+      const hP=applyMatchContext(dedup({byName:mH}),{isHome:true}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
+      const aP=applyMatchContext(dedup({byName:mA}),{isHome:false}).sort((a,b)=>(b.prob??-1)-(a.prob??-1));
       document.getElementById('tab-sa').innerHTML=buildSeasonTab(hP,aP,fx,ht,at,{isIntl:false,cSeason,src:'club',hasLineups:false,hStarters:0,aStarters:0,blend,seasonChain:blend?[altSeason,selSeason]:[selSeason]});
       _saHomePlayers=hP; _saAwayPlayers=aP;
       renderMatchupsTab(fx,ht,at);
@@ -3649,15 +3937,36 @@ function calcExpectedCards(players){
   return s.length?s.reduce((acc,p)=>acc+p.prob,0):null;
 }
 
-function cardProb(fp90,pos,yc,apps,recentFactor=1){
+// 2026-09-16: refFactor/homeAwayFactor are now explicit parameters instead
+// of this function reaching for the _currentRefFactor global directly.
+// Why this matters: extractDomesticStats()/blendPlayerStats()/
+// processPlayers() (and buildSqLookup()'s inline equivalent) all call
+// cardProb() to compute the `prob` baked into the object that
+// _playerStatsCache — and localStorage, banits_ps_* — caches INDEFINITELY
+// per player+season, reused across every match that player appears in this
+// session (and future sessions, up to ~a year for a completed season).
+// Reading a mutable global inside cardProb() meant whatever referee factor
+// happened to be active at the MOMENT a player was first fetched got
+// permanently baked into their cached prob — so a player seen in Match A
+// (referee factor 1.2×) and later appearing in Match B (a different
+// referee, factor 0.85×) would silently keep Match A's stale adjustment in
+// Match B, unless the separate recent-form post-process pass happened to
+// also fire a recompute for unrelated reasons. Real, reproducible bug,
+// found while adding the home/away factor below (which would have
+// inherited the exact same leak if built the same way).
+// Fix: every extraction call site now leaves these at their neutral
+// defaults (1), so the CACHED prob is always the neutral season baseline —
+// applyMatchContext() (SECTION 4d) is now the one place that always
+// recomputes prob fresh for the CURRENT match's referee/home-away/
+// recent-form factors, unconditionally, every render.
+function cardProb(fp90,pos,yc,apps,recentFactor=1,refFactor=1,homeAwayFactor=1){
   const pf=POS_FACTOR[pos]||1.0;
-  // _currentRefFactor (see getRefereeFactor()) and recentFactor (see
-  // recentFormFactor(), SECTION 4d) both only scale the foul-based half of
-  // λ, not the historical-rate half — neither the referee nor a recent hot
-  // streak rewrites a player's career card history, and as a player's own
-  // sample size grows (w→1) their history correctly dominates over either
-  // adjustment anyway.
-  const foulBased=fp90*0.12*pf*_currentRefFactor*recentFactor;
+  // refFactor, homeAwayFactor and recentFactor all only scale the
+  // foul-based half of λ, not the historical-rate half — none of them
+  // rewrite a player's career card history, and as a player's own sample
+  // size grows (w→1) their history correctly dominates over all three
+  // adjustments anyway.
+  const foulBased=fp90*0.12*pf*refFactor*homeAwayFactor*recentFactor;
   const hist=apps>0?yc/apps:0;
   const w=Math.min(apps/20,1);
   const lambda=foulBased*(1-w)+hist*w;
@@ -3717,6 +4026,18 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
     </div>`;
   }
 
+  // 2026-09-16 (advanced analytics): home/away officiating disclosure —
+  // same shape as the referee banner above, shown once there's a
+  // reasonable sample. See homeAwayFactorsFromBaseline(), SECTION 4c-ii,
+  // for the research this is grounded in and the continuous-shrinkage math.
+  let hwBanner='';
+  if(_currentHomeAway && _currentHomeAway.sample>=3 && _currentHomeAway.homeAvg!=null){
+    const hwPctShift = Math.round((_currentHomeAway.away-1)*100);
+    hwBanner = hwPctShift===0 ? '' : `<div class="tip-box" style="background:rgba(0,71,181,.06);border-color:rgba(0,71,181,.2)">
+      <strong style="color:var(--cobalt-text)">🏟 Home/away factor applied</strong> — this league has averaged ${_currentHomeAway.awayAvg.toFixed(1)} cards/match for away teams vs ${_currentHomeAway.homeAvg.toFixed(1)} for home teams this season (${_currentHomeAway.sample} matches sampled) — a well-documented officiating effect, not just a player one. Away players' foul-based probability below is adjusted up by up to ${Math.abs(hwPctShift)}%, home players down, scaled by how much evidence this league's own sample gives it.
+    </div>`;
+  }
+
   const teamSec=(players, col, teamName)=>{
     if(!players.length)return`<div class="no-data" style="padding:14px">
       <i aria-hidden="true" class="ti ti-user-off" style="font-size:20px;display:block;margin-bottom:6px"></i>No stats available.
@@ -3768,7 +4089,7 @@ function buildSeasonTab(hPs,aPs,fx,ht,at,meta={}){
     </div>
   </div>`:'';
 
-  return`${derivedBanner}${banner}${refBanner}${cardBanner}${threatBanner}
+  return`${derivedBanner}${banner}${refBanner}${hwBanner}${cardBanner}${threatBanner}
   <h2 class="stitle"><i aria-hidden="true" class="ti ti-target"></i>Card probability — season analysis
     <span class="chip chip-af" style="margin-left:6px">Poisson model</span>
     ${isIntl&&(src==='club'||src==='squad')?`<span class="chip" style="margin-left:4px;background:rgba(0,184,118,.12);color:var(--low);border:1px solid rgba(0,184,118,.25)">Club stats</span>`:''}
@@ -3837,9 +4158,13 @@ function buildSaCard(p,isIntl,src){
   const posFactor = POS_FACTOR[p.pos]||1.0;
   const refFactor = _currentRefFactor;
   const refApplied = _currentRefMeta && _currentRefMeta.sample>=REF_MIN_SAMPLE && _currentRefMeta.avgCards!==null && refFactor!==1;
-  const recentFactor = p.recentFormFactor || 1; // see applyRecentForm()/recentFormFactor(), SECTION 4d
+  const recentFactor = p.recentFormFactor || 1; // see applyMatchContext()/recentFormFactor(), SECTION 4d
   const recentApplied = recentFactor!==1;
-  const foulLambda = (p.fp90*0.12*posFactor*refFactor*recentFactor).toFixed(3);
+  // 2026-09-16: home/away officiating factor — see applyMatchContext()/
+  // homeAwayFactorsFromBaseline(), SECTION 4c-ii.
+  const hwFactor = p.homeAwayFactor || 1;
+  const hwApplied = hwFactor!==1;
+  const foulLambda = (p.fp90*0.12*posFactor*refFactor*hwFactor*recentFactor).toFixed(3);
   const histRate = p.apps>0 ? (p.yc/p.apps).toFixed(3) : '0.000';
   const weight = Math.min(p.apps/20,1).toFixed(2);
   const blendedLambda = p.prob!==null ? (-Math.log(1-Math.min(p.prob,0.9499))).toFixed(3) : '—';
@@ -3862,10 +4187,11 @@ function buildSaCard(p,isIntl,src){
     ${p.recentMatches?`<div class="sa-ex-row"><span style="color:var(--dim);min-width:90px">Recent form</span><b>Carded in ${Math.round(p.recentMatches*p.recentHitRate)} of last ${p.recentMatches} matches (${(p.recentHitRate*100).toFixed(0)}%)${p.recentFoulsPerCard?` · ${p.recentFoulsPerCard.toFixed(1)} fouls/card recently`:''}</b></div>`:''}
     ${p.foulsMissing?'':
     `<div class="sa-ex-formula">
-      <div>FC/90 <span class="val">${p.fp90.toFixed(2)}</span> × pos.factor <span class="val">${posFactor}</span> (${p.posL}) × 0.12${refApplied?` × ref.factor <span class="val">${refFactor.toFixed(2)}</span>`:''}${recentApplied?` × recent.factor <span class="val">${recentFactor.toFixed(2)}</span>`:''} = λ<sub>foul</sub> <span class="val">${foulLambda}</span></div>
+      <div>FC/90 <span class="val">${p.fp90.toFixed(2)}</span> × pos.factor <span class="val">${posFactor}</span> (${p.posL}) × 0.12${refApplied?` × ref.factor <span class="val">${refFactor.toFixed(2)}</span>`:''}${hwApplied?` × home/away <span class="val">${hwFactor.toFixed(2)}</span>`:''}${recentApplied?` × recent.factor <span class="val">${recentFactor.toFixed(2)}</span>`:''} = λ<sub>foul</sub> <span class="val">${foulLambda}</span></div>
       <div>YC rate <span class="val">${histRate}</span> /game · blend weight <span class="val">${weight}</span> (${p.apps} apps / 20)</div>
       <div>Blended λ <span class="${cls}">${blendedLambda}</span> → P(YC) = 1 − e<sup>−λ</sup> = <span class="${cls}">${pct}%</span></div>
       ${refApplied?`<div style="color:var(--dim);font-size:10px">Ref factor ${refFactor.toFixed(2)}× from ${_currentRefMeta.refereeName}'s ${_currentRefMeta.sample}-match card rate this season</div>`:''}
+      ${hwApplied?`<div style="color:var(--dim);font-size:10px">Home/away factor ${hwFactor.toFixed(2)}× — ${hwFactor>1?'away':'home'} teams have averaged more cards in this league this season (${_currentHomeAway.sample} matches sampled)</div>`:''}
       ${recentApplied?`<div style="color:var(--dim);font-size:10px">Recent-form factor ${recentFactor.toFixed(2)}× — fouling ${recentFactor>1?'more':'less'} than usual over their last ${RECENT_FORM_MATCHES} matches</div>`:''}
     </div>`}
     ${p.foulsMissing?`<div class="sa-ex-warn">Foul data unavailable for this competition — not all leagues and tournaments are tracked. Card probability cannot be calculated.</div>`:''}
@@ -4196,7 +4522,7 @@ function goHome(){
   // in-between screen (like this one) could still be read by, e.g., a
   // dev-tools console call or a future feature that computes probabilities
   // outside of a match context while landing/home is showing.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]}; _currentHomeAway = {home:1, away:1, sample:0};
   if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}
   document.getElementById('landing').style.display='flex';
   document.getElementById('mv').style.display='none';
@@ -4544,7 +4870,7 @@ function openLeagues(){
   // this view doesn't currently call cardProb() itself, but resetting here
   // too (not just at the one confirmed call site) means a previous match's
   // referee factor can never leak into ANY screen reached from here.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]}; _currentHomeAway = {home:1, away:1, sample:0};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   document.getElementById('lg').style.display='flex';
@@ -4707,7 +5033,7 @@ function openClubSearch(){
   if(_activeId){_activeId=null;if(_refreshTmr){clearInterval(_refreshTmr);_refreshTmr=null;}}
   _leaguesOpen=false; _activeClubId=null; _clubSearchOpen=true; _picksOpen=false;
   // 2026-08-27 (follow-up #16): see the matching reset in openClub() below.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]}; _currentHomeAway = {home:1, away:1, sample:0};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
@@ -4857,7 +5183,7 @@ async function openClub(teamId){
   // club page (no other match opened in between) silently applied that
   // stale referee's factor to every player on this unrelated squad — exactly
   // what buildClubSquadCard()'s own comment already claimed couldn't happen.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]}; _currentHomeAway = {home:1, away:1, sample:0};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
@@ -5071,7 +5397,22 @@ const POTW_POOL_CAP = 25;        // top-N kept per week; anything past this was 
 const POTW_HISTORY_CAP = 52;     // ~1 season of weekly picks kept in the permanent track-record log
 
 function pickScore(p){
-  return p.prob * (p.apps / (p.apps + POTW_PRIOR_STRENGTH));
+  // 2026-09-16 (advanced analytics — Tier 1 #3 in
+  // card-model-deep-dive-2026-09-16.md): a start-probability discount on
+  // top of the existing apps-based shrinkage. A player who only featured
+  // in 2 of their team's last 5 matches, or mostly as a late substitute,
+  // isn't a real weekly pick even if their per-90 rate says so —
+  // `p.startProb` (see startProbabilityFactor(), SECTION 4d) comes from
+  // the exact same recent-form data already fetched for this match, zero
+  // new API calls. `startProb` is null (not 0) for branches that don't
+  // fetch recent-form data at all (international/no-lineup squad paths) —
+  // treated as no discount (factor 1) rather than penalizing a candidate
+  // just because this branch doesn't sample recent form, which would be a
+  // worse false-negative than doing nothing. A floor of 0.4 means even a
+  // clearly-fringe player is discounted, never fully zeroed out by this
+  // term alone.
+  const startFactor = p.startProb==null ? 1 : (0.4 + 0.6*p.startProb);
+  return p.prob * (p.apps / (p.apps + POTW_PRIOR_STRENGTH)) * startFactor;
 }
 
 // ISO-8601 week key, e.g. "2026-W35" (Thursday-anchored per the ISO
@@ -5281,7 +5622,7 @@ function openPicks(){
   // openClubSearch() — this view doesn't call cardProb() itself either, but
   // resetting here too means a previous match's referee factor/injury list
   // can never leak into any screen reached from here.
-  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]};
+  _currentRefFactor = 1; _currentRefMeta = null; _currentInjuries = new Map(); _currentSidelined = {home:[], away:[]}; _currentHomeAway = {home:1, away:1, sample:0};
   document.getElementById('landing').style.display='none';
   document.getElementById('mv').style.display='none';
   const lgEl=document.getElementById('lg'); if(lgEl)lgEl.style.display='none';
